@@ -804,6 +804,7 @@ def avvia_finestra():
     sinistra = ttk.Frame(root, padding=10)
     sinistra.grid(row=0, column=0, sticky="n")
     riga = [0]
+    foto = {"img": None}
 
     def prossima():
         riga[0] += 1
@@ -811,6 +812,20 @@ def avvia_finestra():
 
     video = tk.Label(sinistra, width=320, height=240, bg="black")
     video.grid(row=0, column=0, columnspan=2, pady=(0, 6))
+    lbl_no_video = ttk.Label(sinistra, text="(anteprima della webcam spenta)",
+                             foreground="#777", font=("Segoe UI", 9))
+
+    def mostra_riquadro(acceso):
+        """Con l'anteprima spenta il riquadro nero sparisce: senza immagine
+        le sue misure varrebbero in caratteri e diventerebbe enorme."""
+        if acceso:
+            lbl_no_video.grid_remove()
+            video.grid(row=0, column=0, columnspan=2, pady=(0, 6))
+        else:
+            video.grid_remove()
+            video.config(image="")
+            foto["img"] = None
+            lbl_no_video.grid(row=0, column=0, columnspan=2, pady=(0, 6))
 
     lbl_stato = ttk.Label(sinistra, text="", wraplength=320, justify="center",
                           font=("Segoe UI", 10))
@@ -962,9 +977,7 @@ def avvia_finestra():
     def cambia_ant():
         imp["anteprima"] = bool(var_ant.get())
         salva_impostazioni(imp)
-        if not imp["anteprima"]:
-            video.config(image="")
-            foto["img"] = None
+        mostra_riquadro(imp["anteprima"])
 
     ttk.Checkbutton(sinistra, text="Mostra l'anteprima della webcam (toglila per alleggerire)",
                     variable=var_ant, command=cambia_ant).grid(
@@ -1142,8 +1155,8 @@ def avvia_finestra():
             lbl_mouse.config(text="acceso", foreground="#008000")
 
     # ================= aggiornamento periodico =================
-    foto = {"img": None}
     stato_cam = {"elenco": None, "idx": None}
+    mostra_riquadro(bool(imp["anteprima"]))
 
     def aggiorna():
         if motore.in_pausa != stato_pausa["v"]:      # pausa cambiata dal viso
@@ -1175,6 +1188,8 @@ def avvia_finestra():
         if ant is not None and imp["anteprima"]:
             foto["img"] = ImageTk.PhotoImage(Image.fromarray(ant))
             video.config(image=foto["img"])
+        elif imp["anteprima"] and foto["img"] is None:
+            video.config(image="", text="")
         testo = msg
         if elenco is not None:
             testo += "\n" + ("Viso riconosciuto" if faccia else "Nessun viso in vista")
