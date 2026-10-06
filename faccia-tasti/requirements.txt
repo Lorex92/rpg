@@ -1,0 +1,6 @@
+mediapipe
+opencv-python
+pynput
+Pillow
+numpy
+pydirectinput; sys_platform == "win32"

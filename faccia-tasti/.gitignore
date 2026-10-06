@@ -1,0 +1,4 @@
+impostazioni.json
+face_landmarker.task
+*.parziale
+__pycache__/
