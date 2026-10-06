@@ -381,6 +381,8 @@ class HookMouse:
         self.rett = []            # [(x, y, larghezza, altezza)] delle nostre finestre
         self.listener = None
         self.errore = None
+        self.fermato = False
+        self.ultimo_evento = ""   # per mostrare nella finestra cosa vede il hook
 
     def disponibile(self):
         return WINDOWS
@@ -405,28 +407,65 @@ class HookMouse:
         def filtro(msg, data):
             if msg not in (WM_LBUTTONDOWN, WM_LBUTTONUP):
                 return True
-            if data.dwExtraInfo == MARCHIO_MIO:
-                return True                   # e' un clic nostro: passa
-            if msg == WM_LBUTTONDOWN:
-                if mm.in_corso or self.sopra_finestra(data.pt.x, data.pt.y):
+            try:
+                if data.dwExtraInfo == MARCHIO_MIO:
+                    self.ultimo_evento = "clic nostro passato"
+                    return True               # e' un clic nostro: passa
+                if msg == WM_LBUTTONDOWN:
+                    if mm.in_corso or self.sopra_finestra(data.pt.x, data.pt.y):
+                        self.ultimo_evento = "clic sulla finestra: passato"
+                        return True
+                    if mm.giu(data.pt.x, data.pt.y):
+                        self.ultimo_evento = "tasto sinistro catturato"
+                        self.listener.suppress_event()
+                    else:
+                        self.ultimo_evento = "clic passato (spento o in pausa)"
                     return True
-                if mm.giu(data.pt.x, data.pt.y):
+                # WM_LBUTTONUP
+                if mm.in_corso:
+                    if mm.su():
+                        self.ultimo_evento = "rilasciato: clic normale"
+                        self._clic_normale()
+                    else:
+                        self.ultimo_evento = "rilasciato dopo le frecce"
                     self.listener.suppress_event()
                 return True
-            # WM_LBUTTONUP
-            if mm.in_corso:
-                if mm.su():
-                    self._clic_normale()
-                self.listener.suppress_event()
-            return True
+            except Exception as e:
+                if not isinstance(e, self.listener._HANDLED_EXCEPTIONS):
+                    import traceback
+                    traceback.print_exc()
+                    self.errore = str(e)
+                    mm.rilascia()
+                    return True
+                raise
 
-        def al_movimento(x, y, *_):
-            if mm.in_corso:
-                mm.muovi(x, y)
-
-        self.listener = mouse.Listener(on_move=al_movimento, win32_event_filter=filtro)
+        self.listener = mouse.Listener(win32_event_filter=filtro)
         self.listener.daemon = True
         self.listener.start()
+
+        # Posizione del puntatore letta direttamente ogni 10 ms mentre il tasto
+        # e' premuto: funziona anche con Talon, eye tracker e head tracker, che
+        # spostano il puntatore senza generare eventi di movimento.
+        threading.Thread(target=self._sondaggio, daemon=True).start()
+
+    def _sondaggio(self):
+        import ctypes
+        from ctypes import wintypes
+        u32 = ctypes.windll.user32
+        pt = wintypes.POINT()
+        while not self.fermato:
+            if self.mm.in_corso:
+                try:
+                    if u32.GetCursorPos(ctypes.byref(pt)):
+                        self.mm.muovi(pt.x, pt.y)
+                except Exception:
+                    pass
+                time.sleep(0.01)
+            else:
+                time.sleep(0.03)
+
+    def attivo(self):
+        return self.listener is not None and self.listener.running
 
     def _clic_normale(self):
         try:
@@ -436,6 +475,7 @@ class HookMouse:
             pass
 
     def ferma(self):
+        self.fermato = True
         self.mm.rilascia()
         if self.listener is not None:
             try:
@@ -1147,12 +1187,23 @@ def avvia_finestra():
             chk_attivo.state(["disabled"])
         elif hook.errore:
             lbl_mouse.config(text="errore: " + hook.errore[:60], foreground="#b00000")
+        elif hook.listener is not None and not hook.attivo():
+            lbl_mouse.config(text="fermato: riavvia il programma (vedi errori.txt)",
+                             foreground="#b00000")
         elif not cm_cfg["attivo"]:
             lbl_mouse.config(text="spento: il mouse funziona normalmente", foreground="#555")
         elif motore.in_pausa:
             lbl_mouse.config(text="in pausa", foreground="#b00000")
         else:
-            lbl_mouse.config(text="acceso", foreground="#008000")
+            dettagli = []
+            if mm.in_corso:
+                dettagli.append("sinistro premuto")
+            if mm.tenuti:
+                dettagli.append("tiene: " + ", ".join(sorted(mm.tenuti)))
+            if not dettagli and hook.ultimo_evento:
+                dettagli.append(hook.ultimo_evento)
+            lbl_mouse.config(text="acceso" + ("  -  " + "; ".join(dettagli) if dettagli else ""),
+                             foreground="#008000")
 
     # ================= aggiornamento periodico =================
     stato_cam = {"elenco": None, "idx": None}
