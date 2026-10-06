@@ -35,13 +35,16 @@ Mentre tieni premuto, il puntatore resta fermo nel punto in cui hai cliccato
 ## Uso
 
 1. Fai **doppio clic** su `MouseFrecce.ahk`.
-2. Compare una piccola finestra sempre in primo piano con scritto **ATTIVO**.
-   Da questo momento il trascinamento con il tasto sinistro diventa frecce.
+2. Compare una piccola finestra sempre in primo piano con scritto
+   **IN FUNZIONE**. Da questo momento il trascinamento con il tasto sinistro
+   diventa frecce.
 3. Apri il gioco e **clicca una volta sulla finestra del gioco** per dargli il
    focus, poi gioca tenendo premuto e trascinando.
-4. Per tornare a usare il mouse normalmente premi il bottone **DISATTIVA**
-   nella finestra, oppure premi il **tasto centrale del mouse** (la rotellina).
-   Lo stesso bottone/tasto lo riattiva.
+4. **Per mettere in pausa** e tornare a usare il mouse normalmente premi il
+   bottone grande **METTI IN PAUSA** nella finestra, oppure premi il **tasto
+   centrale del mouse** (la rotellina). La finestra diventa rossa con scritto
+   **IN PAUSA**. Lo stesso bottone (ora **RIPRENDI**) o la rotellina lo fanno
+   ripartire.
 5. Per chiudere il programma premi **Esci dal programma** nella finestra, oppure
    clicca con il destro sull'icona verde "H" in basso a destra vicino
    all'orologio e scegli **Exit**.
@@ -59,8 +62,8 @@ note). All'inizio del file c'è la sezione **IMPOSTAZIONI**:
 | `ZonaMorta`         | Di quanti pixel devi spostarti prima che parta una freccia. Più alto = meno sensibile.     | `25`            |
 | `Diagonali`         | `true` = muovendoti in diagonale premi due frecce insieme (es. SU + DESTRA).               | `false`         |
 | `BloccaCursore`     | `true` = il puntatore resta fermo dove hai cliccato mentre tieni premuto.                   | `true`          |
-| `TastoInterruttore` | Tasto del mouse che attiva/disattiva: `"MButton"` centrale, `"RButton"` destro, `""` nessuno. | `"MButton"`   |
-| `AttivoAllAvvio`    | `true` = il programma è già attivo appena lo apri.                                          | `true`          |
+| `TastoInterruttore` | Tasto del mouse per pausa/riprendi: `"MButton"` centrale, `"RButton"` destro, `""` nessuno. | `"MButton"`   |
+| `AttivoAllAvvio`    | `true` = parte già in funzione; `false` = parte in pausa.                                   | `true`          |
 | `TastoSu` ecc.      | Quali tasti premere. Per i giochi che usano W A S D scrivi `"w"`, `"s"`, `"a"`, `"d"`.      | frecce          |
 
 Dopo aver cambiato qualcosa salva il file e **riapri** il programma (doppio

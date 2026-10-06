@@ -44,13 +44,13 @@ Diagonali := false
 ; false = il puntatore si muove normalmente
 BloccaCursore := true
 
-; Tasto del mouse che ATTIVA / DISATTIVA il programma al volo.
+; Tasto del mouse che mette in PAUSA / RIPRENDE il programma al volo.
 ;   "MButton" = tasto centrale (rotellina premuta)
 ;   "RButton" = tasto destro
 ;   ""        = nessuno (si usa solo il bottone nella finestra)
 TastoInterruttore := "MButton"
 
-; true = il programma e' gia' attivo appena lo apri
+; true = il programma e' gia' in funzione appena lo apri (false = parte in pausa)
 AttivoAllAvvio := true
 
 ; Tasti da tenere premuti. Se il gioco usa W A S D al posto delle frecce
@@ -82,10 +82,13 @@ premuti     := Map()  ; tasti attualmente tenuti premuti
 MyGui := Gui("+AlwaysOnTop +ToolWindow +E0x08000000", "Mouse -> Frecce")
 MyGui.SetFont("s11", "Segoe UI")
 Stato := MyGui.Add("Text", "w260 h50 Center", "")
-BtnToggle := MyGui.Add("Button", "w260 h45", "")
+MyGui.SetFont("s14 Bold")
+BtnToggle := MyGui.Add("Button", "w260 h60", "")
+MyGui.SetFont("s11 Norm")
 BtnToggle.OnEvent("Click", Toggle)
 MyGui.SetFont("s9")
-Info := MyGui.Add("Text", "w260 Center", "Tieni premuto il sinistro e trascina = frecce`nClic veloce = clic normale")
+Info := MyGui.Add("Text", "w260 Center", "Tieni premuto il sinistro e trascina = frecce`nClic veloce = clic normale"
+    . (TastoInterruttore != "" ? "`nPausa / riprendi anche con il " NomeTasto(TastoInterruttore) : ""))
 MyGui.SetFont("s10")
 BtnEsci := MyGui.Add("Button", "w260", "Esci dal programma")
 BtnEsci.OnEvent("Click", (*) => ExitApp())
@@ -93,7 +96,7 @@ MyGui.OnEvent("Close", (*) => ExitApp())
 MyGui.Show("x20 y20 NoActivate")
 
 A_IconTip := "Mouse -> Frecce"
-A_TrayMenu.Insert("1&", "Attiva / Disattiva", Toggle)
+A_TrayMenu.Insert("1&", "Pausa / Riprendi", Toggle)
 A_TrayMenu.Insert("2&")
 
 if (TastoInterruttore != "")
@@ -227,12 +230,12 @@ SetAttivo(valore) {
 AggiornaGui() {
     if Attivo {
         Stato.SetFont("c008000 Bold")
-        Stato.Text := "ATTIVO`nil trascinamento diventa frecce"
-        BtnToggle.Text := "DISATTIVA" (TastoInterruttore != "" ? "  (o " NomeTasto(TastoInterruttore) ")" : "")
+        Stato.Text := "IN FUNZIONE`nil trascinamento diventa frecce"
+        BtnToggle.Text := "II  METTI IN PAUSA"
     } else {
         Stato.SetFont("cB00000 Bold")
-        Stato.Text := "SPENTO`nil mouse funziona normalmente"
-        BtnToggle.Text := "ATTIVA" (TastoInterruttore != "" ? "  (o " NomeTasto(TastoInterruttore) ")" : "")
+        Stato.Text := "IN PAUSA`nil mouse funziona normalmente"
+        BtnToggle.Text := ">  RIPRENDI"
     }
 }
 
