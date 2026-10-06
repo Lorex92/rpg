@@ -52,6 +52,8 @@ ESPRESSIONI = [
 ]
 
 MODALITA = ["Tieni premuto", "Premi una volta"]
+AZIONE_PAUSA = "** Pausa / Riprendi **"
+DURATA_TAP = 0.08   # secondi di pressione per "Premi una volta"
 
 # ----------------------------------------------------------------------
 #  TASTI DISPONIBILI   nome mostrato -> (tipo, tasto pynput, nome pydirectinput)
@@ -60,7 +62,7 @@ MODALITA = ["Tieni premuto", "Premi una volta"]
 def _tabella_tasti():
     from pynput.keyboard import Key
     from pynput.mouse import Button
-    t = {"Nessuno": None}
+    t = {"Nessuno": None, AZIONE_PAUSA: ("p", None, None)}
     speciali = [
         ("Freccia su", Key.up, "up"), ("Freccia giu'", Key.down, "down"),
         ("Freccia sinistra", Key.left, "left"), ("Freccia destra", Key.right, "right"),
@@ -106,7 +108,7 @@ class Tastiera:
 
     def premi(self, nome):
         v = self.tabella.get(nome)
-        if not v:
+        if not v or v[0] == "p":
             return
         tipo, k, pdi = v
         if tipo == "m":
@@ -118,7 +120,7 @@ class Tastiera:
 
     def rilascia(self, nome):
         v = self.tabella.get(nome)
-        if not v:
+        if not v or v[0] == "p":
             return
         tipo, k, pdi = v
         try:
@@ -130,6 +132,23 @@ class Tastiera:
                 self.kb.release(k)
         except Exception:
             pass
+
+    def sblocca_tutto(self):
+        """Rilascia OGNI tasto e pulsante conosciuto, premuto o no: serve per
+        sbloccare il computer se qualcosa e' rimasto premuto."""
+        for nome, v in self.tabella.items():
+            if not v or v[0] == "p":
+                continue
+            tipo, k, pdi = v
+            try:
+                if tipo == "m":
+                    self.mouse.release(k)
+                else:
+                    self.kb.release(k)
+                    if self.pdi and pdi:
+                        self.pdi.keyUp(pdi)
+            except Exception:
+                pass
 
 
 # ----------------------------------------------------------------------
@@ -148,6 +167,7 @@ class Motore:
         self.contatori = {}       # id -> fotogrammi consecutivi sopra/sotto soglia
         self.tenuti = {}          # id -> nome del tasto tenuto premuto
         self.in_pausa = False
+        self.chiuso = False       # True durante la chiusura: non preme piu' nulla
 
     def aggiorna(self, valori):
         """valori: dict id -> punteggio 0..1 (vuoto = nessuna faccia)."""
@@ -172,14 +192,18 @@ class Motore:
                     self._disattivata(eid)
 
     def _attivata(self, eid, cfg):
-        if self.in_pausa:
+        if self.chiuso:
             return
         tasto = cfg["tasto"]
-        if tasto == "Nessuno":
+        if tasto == AZIONE_PAUSA:
+            # funziona anche quando e' in pausa: e' il modo per riprendere
+            self.pausa(not self.in_pausa)
+            return
+        if self.in_pausa or tasto == "Nessuno":
             return
         if cfg["modalita"] == "Premi una volta":
             self.tastiera.premi(tasto)
-            time.sleep(0.05)
+            time.sleep(DURATA_TAP)
             self.tastiera.rilascia(tasto)
         else:
             self.tastiera.premi(tasto)
@@ -193,6 +217,11 @@ class Motore:
     def rilascia_tutto(self):
         for eid in list(self.tenuti):
             self._disattivata(eid)
+
+    def chiudi(self):
+        self.chiuso = True
+        self.rilascia_tutto()
+        self.tastiera.sblocca_tutto()
 
     def pausa(self, valore):
         self.in_pausa = valore
@@ -269,6 +298,46 @@ def salva_impostazioni(imp):
             json.dump(imp, f, indent=2, ensure_ascii=False)
     except OSError:
         pass
+
+
+def alza_priorita():
+    """Su Windows chiede al sistema di dare precedenza a questo programma,
+    cosi' continua a vedere il viso anche con un gioco pesante aperto."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00008000)  # ABOVE_NORMAL
+    except Exception:
+        pass
+
+
+def proteggi_chiusura(motore):
+    """Qualunque cosa chiuda il programma (X della finestra, chiusura della
+    console, spegnimento), prima rilascia tutti i tasti."""
+    import atexit
+    import signal
+    atexit.register(motore.chiudi)
+    for nome in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        sig = getattr(signal, nome, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, lambda *_: (motore.chiudi(), os._exit(0)))
+            except Exception:
+                pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            HANDLER = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+
+            def gestore(evento):
+                motore.chiudi()
+                return 0
+            proteggi_chiusura._gestore = HANDLER(gestore)   # evita il garbage collector
+            ctypes.windll.kernel32.SetConsoleCtrlHandler(proteggi_chiusura._gestore, 1)
+        except Exception:
+            pass
 
 
 def scarica_modello(stato=None):
@@ -480,8 +549,11 @@ def avvia_finestra():
 
     imp = carica_impostazioni()
     tastiera = Tastiera()
+    tastiera.sblocca_tutto()        # se qualcosa era rimasto premuto, lo libera
     motore = Motore(tastiera, imp)
     ric = Riconoscitore(imp, motore)
+    alza_priorita()
+    proteggi_chiusura(motore)
 
     root = tk.Tk()
     root.title("Faccia -> Tasti")
@@ -520,6 +592,7 @@ def avvia_finestra():
 
     def toggle_pausa():
         motore.pausa(not motore.in_pausa)
+        stato_pausa["v"] = motore.in_pausa
         aggiorna_pausa()
 
     btn_pausa = ttk.Button(sinistra, command=toggle_pausa, style="Grande.TButton")
@@ -558,8 +631,15 @@ def avvia_finestra():
     ttk.Button(sinistra, text="Ricalibra posizione testa (guarda dritto)",
                command=ric.richiedi_calibrazione).grid(row=6, column=0, columnspan=2,
                                                         sticky="ew", pady=(10, 4))
+
+    def sblocca():
+        motore.rilascia_tutto()
+        tastiera.sblocca_tutto()
+
+    ttk.Button(sinistra, text="Sblocca tutti i tasti (se qualcosa resta premuto)",
+               command=sblocca).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 4))
     ttk.Button(sinistra, text="Esci dal programma",
-               command=lambda: chiudi()).grid(row=7, column=0, columnspan=2,
+               command=lambda: chiudi()).grid(row=8, column=0, columnspan=2,
                                               sticky="ew", pady=(4, 0))
 
     # ---------- colonna destra: una riga per espressione ----------
@@ -617,14 +697,21 @@ def avvia_finestra():
     ttk.Label(destra, foreground="#555", wraplength=640, justify="left",
               text=("Soglia: quanto deve essere forte l'espressione per scattare "
                     "(trascina verso sinistra = piu' sensibile). "
-                    "Le barre si colorano quando l'espressione e' attiva.")
+                    "Le barre si colorano quando l'espressione e' attiva.\n"
+                    "Consiglio: assegna '" + AZIONE_PAUSA + "' a un'espressione, cosi' "
+                    "puoi fermare e riprendere il programma anche dentro un gioco a "
+                    "schermo intero.")
               ).grid(row=len(ESPRESSIONI) + 1, column=0, columnspan=5, pady=(10, 0), sticky="w")
 
     # ---------- aggiornamento periodico ----------
     foto = {"img": None}
     stato_cam = {"elenco": None, "idx": None}
+    stato_pausa = {"v": motore.in_pausa}
 
     def aggiorna():
+        if motore.in_pausa != stato_pausa["v"]:      # pausa cambiata dal viso
+            stato_pausa["v"] = motore.in_pausa
+            aggiorna_pausa()
         with ric.lock:
             valori = dict(ric.valori)
             faccia = ric.faccia
@@ -649,9 +736,10 @@ def avvia_finestra():
             attiva = motore.attive.get(eid, False)
             etichette[eid].config(foreground="#008000" if attiva else "black",
                                   font=("Segoe UI", 10, "bold" if attiva else "normal"))
-        root.after(40, aggiorna)
+        root.after(66, aggiorna)
 
     def chiudi():
+        motore.chiuso = True
         ric.fermati = True
         motore.rilascia_tutto()
         root.destroy()
@@ -660,19 +748,31 @@ def avvia_finestra():
     ric.start()
     root.after(100, aggiorna)
     root.mainloop()
+    motore.chiuso = True
     ric.fermati = True
-    motore.rilascia_tutto()
+    ric.join(3.0)
+    motore.chiudi()
 
+
+FILE_ERRORI = os.path.join(CARTELLA, "errori.txt")
 
 if __name__ == "__main__":
+    senza_console = sys.stdout is None or sys.stderr is None
+    if senza_console:
+        # avviato con pythonw: niente finestra nera, gli errori vanno su file
+        log = open(FILE_ERRORI, "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log
     try:
         avvia_finestra()
     except Exception:
         import traceback
-        traceback.print_exc()
-        print("\nSi e' verificato un errore (vedi sopra). Premi Invio per chiudere.")
+        testo = traceback.format_exc()
+        print(testo)
         try:
-            input()
-        except EOFError:
+            import tkinter.messagebox as mb
+            mb.showerror("Faccia -> Tasti: errore",
+                         "Si e' verificato un errore. I dettagli sono nel file errori.txt "
+                         "nella cartella del programma.\n\n" + testo[-800:])
+        except Exception:
             pass
         sys.exit(1)

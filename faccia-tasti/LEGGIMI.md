@@ -56,7 +56,8 @@ Le scelte si salvano da sole nel file `impostazioni.json`.
 ## Uso
 
 1. Fai **doppio clic su `avvia.bat`**. La prima volta il programma scarica da
-   solo il modello per il riconoscimento del viso (circa 4 MB).
+   solo il modello per il riconoscimento del viso (circa 4 MB). Non compare
+   nessuna finestra nera: si apre direttamente la finestra del programma.
 2. Si apre la finestra con l'anteprima della webcam a sinistra e la lista
    delle espressioni a destra. Mettiti davanti alla webcam **guardando
    dritto** per i primi secondi: il programma impara la posizione neutra
@@ -67,7 +68,14 @@ Le scelte si salvano da sole nel file `impostazioni.json`.
 5. Clicca sulla finestra del gioco per dargli il focus e gioca.
 6. **Pausa**: il bottone grande **METTI IN PAUSA** blocca tutto (non preme
    più niente), **RIPRENDI** fa ripartire. Utile quando parli o mangi.
-7. **Esci dal programma** chiude tutto.
+7. **Esci dal programma** chiude tutto e rilascia ogni tasto.
+
+### Pausa con un'espressione (utile nei giochi a schermo intero)
+
+Nel menu dei tasti c'è anche la voce **`** Pausa / Riprendi **`**. Se la
+assegni a un'espressione (per esempio "Entrambi gli occhi chiusi" oppure
+"Guance gonfie"), quell'espressione mette in pausa e riprende il programma
+senza dover tornare alla finestra. Funziona anche mentre è in pausa.
 
 La finestra resta sempre in primo piano; puoi spostarla dalla barra del
 titolo per non coprire il gioco.
@@ -96,10 +104,24 @@ titolo per non coprire il gioco.
 - **Il gioco ignora i tasti.** Alcuni giochi vanno avviati prima del
   programma, oppure serve avviare `avvia.bat` con clic destro → "Esegui come
   amministratore".
+- **Il programma non si apre.** Guarda nel file `errori.txt` nella cartella:
+  c'è scritto cosa è andato storto. Copialo e incollamelo.
 - **"Nessuna webcam disponibile".** Controlla che la webcam sia collegata e
   che un altro programma (per esempio una videochiamata) non la stia già
   usando. Poi scegli la webcam dal menu "Webcam da usare".
-- **Un tasto resta premuto.** Premi "METTI IN PAUSA": rilascia tutto.
+- **Un tasto o il mouse restano "bloccati"** (non riesci più a cliccare, le
+  finestre si comportano in modo strano). Vuol dire che un tasto virtuale è
+  rimasto premuto. Premi il bottone **Sblocca tutti i tasti** nella finestra,
+  oppure semplicemente riavvia il programma con `avvia.bat`: all'avvio rilascia
+  da solo ogni tasto. Dalla versione attuale questo non dovrebbe più succedere,
+  perché il programma rilascia tutto anche se viene chiuso di colpo.
+- **Nel gioco le espressioni scattano poco o in ritardo.** Il gioco occupa il
+  processore e la webcam viene analizzata più lentamente. Il programma si dà da
+  solo una priorità più alta, ma aiuta anche: chiudere altri programmi pesanti
+  (per esempio Stable Diffusion), abbassare i dettagli grafici del gioco,
+  usare una buona illuminazione. Se il gioco è avviato "come amministratore",
+  anche `avvia.bat` va avviato con clic destro → "Esegui come amministratore",
+  altrimenti Windows blocca i tasti inviati.
 
 ## Privacy
 
