@@ -1,5 +1,9 @@
 # Mouse → Frecce
 
+> **Nota:** questa funzione è ora inclusa anche nel programma `faccia-tasti`,
+> insieme al riconoscimento delle espressioni del viso. Questo script
+> AutoHotkey resta come alternativa leggera se vuoi solo il mouse.
+
 Un piccolo programma per Windows che ti permette di **usare i tasti freccia
 con il solo mouse**, come se il mouse fosse un joystick.
 
