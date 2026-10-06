@@ -21,8 +21,9 @@ con il solo mouse**, come se il mouse fosse un joystick.
 Un **clic veloce** (premi e rilasci senza spostarti) resta un clic normale,
 quindi puoi continuare a usare i menu del gioco.
 
-Mentre tieni premuto, il puntatore resta fermo nel punto in cui hai cliccato
-(così non scappa ai bordi dello schermo). Si può disattivare, vedi sotto.
+Funziona anche se muovi il puntatore con **Talon**, un eye tracker, un head
+tracker o un altro programma di accessibilità: il programma guarda solo dove
+si trova il puntatore rispetto al punto in cui hai iniziato a premere.
 
 ## Installazione (si fa una volta sola)
 
@@ -61,7 +62,7 @@ note). All'inizio del file c'è la sezione **IMPOSTAZIONI**:
 |---------------------|---------------------------------------------------------------------------------------------|-----------------|
 | `ZonaMorta`         | Di quanti pixel devi spostarti prima che parta una freccia. Più alto = meno sensibile.     | `25`            |
 | `Diagonali`         | `true` = muovendoti in diagonale premi due frecce insieme (es. SU + DESTRA).               | `false`         |
-| `BloccaCursore`     | `true` = il puntatore resta fermo dove hai cliccato mentre tieni premuto.                   | `true`          |
+| `BloccaCursore`     | `true` = il puntatore viene riportato dove hai cliccato. **Lascia `false` se usi Talon** o un eye/head tracker, altrimenti il puntatore salta. | `false` |
 | `TastoInterruttore` | Tasto del mouse per pausa/riprendi: `"MButton"` centrale, `"RButton"` destro, `""` nessuno. | `"MButton"`   |
 | `AttivoAllAvvio`    | `true` = parte già in funzione; `false` = parte in pausa.                                   | `true`          |
 | `TastoSu` ecc.      | Quali tasti premere. Per i giochi che usano W A S D scrivi `"w"`, `"s"`, `"a"`, `"d"`.      | frecce          |
@@ -70,6 +71,10 @@ Dopo aver cambiato qualcosa salva il file e **riapri** il programma (doppio
 clic sul file: la versione vecchia si chiude da sola).
 
 ## Se qualcosa non va
+
+- **Il puntatore salta o si muove male** (tipico con Talon, eye tracker, head
+  tracker). Controlla che nel file ci sia `BloccaCursore := false`. Se per
+  errore è `true`, cambialo e riapri il programma.
 
 - **Le frecce non arrivano al gioco.** Clicca una volta sulla finestra del
   gioco per dargli il focus e riprova. Alcuni giochi hanno bisogno di essere

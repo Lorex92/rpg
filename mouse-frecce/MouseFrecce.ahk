@@ -39,10 +39,12 @@ ZonaMorta := 25
 ; false = una sola freccia alla volta, quella della direzione prevalente
 Diagonali := false
 
-; true  = mentre tieni premuto il puntatore resta fermo dove hai cliccato
-;         (come un joystick: non scappa ai bordi dello schermo)
-; false = il puntatore si muove normalmente
-BloccaCursore := true
+; false = il puntatore si muove normalmente (CONSIGLIATO)
+; true  = mentre tieni premuto il puntatore viene riportato dove hai cliccato
+;         ATTENZIONE: NON usare con Talon, eye tracker, head tracker o altri
+;         programmi che muovono il puntatore al posto del mouse: il puntatore
+;         comincia a saltare. Va bene solo con un mouse fisico vero.
+BloccaCursore := false
 
 ; Tasto del mouse che mette in PAUSA / RIPRENDE il programma al volo.
 ;   "MButton" = tasto centrale (rotellina premuta)
