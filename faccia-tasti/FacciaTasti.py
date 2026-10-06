@@ -378,7 +378,7 @@ class HookMouse:
     def __init__(self, motore_mouse, tastiera):
         self.mm = motore_mouse
         self.tastiera = tastiera
-        self.rett = None          # (x, y, larghezza, altezza) della nostra finestra
+        self.rett = []            # [(x, y, larghezza, altezza)] delle nostre finestre
         self.listener = None
         self.errore = None
 
@@ -386,8 +386,10 @@ class HookMouse:
         return WINDOWS
 
     def sopra_finestra(self, x, y):
-        r = self.rett
-        return bool(r) and r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]
+        for r in self.rett:
+            if r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]:
+                return True
+        return False
 
     def avvia(self):
         if not WINDOWS:
@@ -451,6 +453,7 @@ def impostazioni_predefinite():
         "webcam": 0,
         "fps": 15,
         "anteprima": True,
+        "finestrella": {"mostra": True, "x": 40, "y": 40},
         "espressioni": {
             eid: {"tasto": "Nessuno", "modalita": MODALITA[0], "soglia": soglia}
             for eid, _n, soglia, _f in ESPRESSIONI
@@ -473,6 +476,11 @@ def carica_impostazioni():
         imp["webcam"] = int(salvate.get("webcam", 0))
         imp["fps"] = int(salvate.get("fps", imp["fps"]))
         imp["anteprima"] = bool(salvate.get("anteprima", True))
+        fin = salvate.get("finestrella", {})
+        if isinstance(fin, dict):
+            imp["finestrella"]["mostra"] = bool(fin.get("mostra", True))
+            imp["finestrella"]["x"] = int(fin.get("x", 40))
+            imp["finestrella"]["y"] = int(fin.get("y", 40))
         for eid, cfg in salvate.get("espressioni", {}).items():
             if eid in imp["espressioni"] and isinstance(cfg, dict):
                 imp["espressioni"][eid].update(cfg)
@@ -506,6 +514,24 @@ def scarica_modello(stato=None):
     tmp = FILE_MODELLO + ".parziale"
     urllib.request.urlretrieve(URL_MODELLO, tmp)
     os.replace(tmp, FILE_MODELLO)
+
+
+def non_rubare_focus(finestra_tk):
+    """Su Windows: cliccare questa finestra non toglie il focus al gioco e la
+    finestra non compare nella barra delle applicazioni."""
+    if not WINDOWS:
+        return
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        hwnd = u32.GetAncestor(int(finestra_tk.winfo_id()), 2)   # GA_ROOT
+        GWL_EXSTYLE = -20
+        stile = u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        stile |= 0x08000000 | 0x00000080        # WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+        u32.SetWindowLongW(hwnd, GWL_EXSTYLE, stile)
+        u32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0027)   # NOMOVE|NOSIZE|NOZORDER|FRAMECHANGED
+    except Exception:
+        pass
 
 
 def alza_priorita():
@@ -764,7 +790,6 @@ def avvia_finestra():
 
     root = tk.Tk()
     root.title("Faccia -> Tasti")
-    root.attributes("-topmost", True)
     root.resizable(False, False)
 
     stile = ttk.Style()
@@ -801,6 +826,7 @@ def avvia_finestra():
         else:
             lbl_pausa.config(text="IN FUNZIONE", foreground="#008000")
             btn_pausa.config(text="II  METTI IN PAUSA")
+        aggiorna_finestrella()
 
     stato_pausa = {"v": motore.in_pausa}
 
@@ -810,7 +836,94 @@ def avvia_finestra():
         aggiorna_pausa()
 
     btn_pausa = ttk.Button(sinistra, command=toggle_pausa, style="Grande.TButton")
-    btn_pausa.grid(row=prossima(), column=0, columnspan=2, sticky="ew", pady=(4, 10))
+    btn_pausa.grid(row=prossima(), column=0, columnspan=2, sticky="ew", pady=(4, 6))
+
+    # ---- finestrella di pausa: piccola, spostabile, sempre in primo piano ----
+    fin = {"top": None, "btn": None, "lbl": None, "drag": None}
+    fin_cfg = imp["finestrella"]
+
+    def aggiorna_finestrella():
+        if fin["btn"] is None:
+            return
+        if motore.in_pausa:
+            fin["btn"].config(text=">  RIPRENDI")
+            fin["lbl"].config(text="IN PAUSA", foreground="#b00000")
+        else:
+            fin["btn"].config(text="II  PAUSA")
+            fin["lbl"].config(text="IN FUNZIONE", foreground="#008000")
+
+    def crea_finestrella():
+        if fin["top"] is not None:
+            return
+        top = tk.Toplevel(root)
+        top.overrideredirect(True)          # senza bordi ne' barra del titolo
+        top.attributes("-topmost", True)
+        top.configure(bg="#333333")
+        cornice = tk.Frame(top, bg="#333333", padx=4, pady=4)
+        cornice.pack()
+        maniglia = tk.Label(cornice, text="::", bg="#333333", fg="#bbbbbb",
+                            font=("Segoe UI", 12, "bold"), cursor="fleur", padx=4)
+        maniglia.grid(row=0, column=0, rowspan=2, sticky="ns")
+        lbl = tk.Label(cornice, text="", bg="#333333", font=("Segoe UI", 8, "bold"))
+        lbl.grid(row=0, column=1, sticky="w")
+        btn = ttk.Button(cornice, command=toggle_pausa, style="Grande.TButton", width=12)
+        btn.grid(row=1, column=1, sticky="ew")
+        btn_apri = tk.Label(cornice, text="\u2630", bg="#333333", fg="#bbbbbb",
+                            font=("Segoe UI", 11), cursor="hand2", padx=4)
+        btn_apri.grid(row=0, column=2, rowspan=2, sticky="ns")
+
+        def apri_principale(_e=None):
+            root.deiconify()
+            root.lift()
+        btn_apri.bind("<Button-1>", apri_principale)
+
+        # trascinamento dalla maniglia (o dalla scritta)
+        def inizio_drag(e):
+            fin["drag"] = (e.x_root - top.winfo_x(), e.y_root - top.winfo_y())
+
+        def durante_drag(e):
+            if fin["drag"]:
+                top.geometry("+%d+%d" % (e.x_root - fin["drag"][0], e.y_root - fin["drag"][1]))
+
+        def fine_drag(_e):
+            fin["drag"] = None
+            fin_cfg["x"], fin_cfg["y"] = top.winfo_x(), top.winfo_y()
+            salva_impostazioni(imp)
+
+        for w in (maniglia, lbl):
+            w.bind("<ButtonPress-1>", inizio_drag)
+            w.bind("<B1-Motion>", durante_drag)
+            w.bind("<ButtonRelease-1>", fine_drag)
+
+        x = max(0, min(int(fin_cfg["x"]), root.winfo_screenwidth() - 200))
+        y = max(0, min(int(fin_cfg["y"]), root.winfo_screenheight() - 80))
+        top.geometry("+%d+%d" % (x, y))
+        fin.update(top=top, btn=btn, lbl=lbl)
+        aggiorna_finestrella()
+        top.update_idletasks()
+        non_rubare_focus(top)
+
+    def distruggi_finestrella():
+        if fin["top"] is not None:
+            try:
+                fin["top"].destroy()
+            except Exception:
+                pass
+            fin.update(top=None, btn=None, lbl=None)
+
+    var_fin = tk.BooleanVar(value=bool(fin_cfg["mostra"]))
+
+    def cambia_fin():
+        fin_cfg["mostra"] = bool(var_fin.get())
+        salva_impostazioni(imp)
+        if fin_cfg["mostra"]:
+            crea_finestrella()
+        else:
+            distruggi_finestrella()
+
+    ttk.Checkbutton(sinistra, text="Finestrella di pausa sempre in primo piano (spostabile)",
+                    variable=var_fin, command=cambia_fin).grid(
+        row=prossima(), column=0, columnspan=2, sticky="w", pady=(0, 10))
     aggiorna_pausa()
 
     # --- webcam
@@ -1038,8 +1151,13 @@ def avvia_finestra():
             aggiorna_pausa()
         aggiorna_stato_mouse()
         try:
-            hook.rett = (root.winfo_rootx(), root.winfo_rooty(),
-                         root.winfo_width(), root.winfo_height())
+            rett = [(root.winfo_rootx(), root.winfo_rooty(),
+                     root.winfo_width(), root.winfo_height())]
+            if fin["top"] is not None:
+                t = fin["top"]
+                rett.append((t.winfo_rootx(), t.winfo_rooty(),
+                             t.winfo_width(), t.winfo_height()))
+            hook.rett = rett
         except Exception:
             pass
         with ric.lock:
@@ -1074,9 +1192,12 @@ def avvia_finestra():
         ric.fermati = True
         hook.ferma()
         motore.rilascia_tutto()
+        distruggi_finestrella()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", chiudi)
+    if fin_cfg["mostra"]:
+        root.after(200, crea_finestrella)
     ric.start()
     hook.avvia()
     aggiorna_stato_mouse()

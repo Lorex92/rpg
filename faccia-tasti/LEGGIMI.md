@@ -67,7 +67,19 @@ Le scelte si salvano da sole nel file `impostazioni.json`.
    un'espressione puoi farlo anche dentro un gioco a schermo intero.
 6. **Esci dal programma** chiude tutto e rilascia ogni tasto.
 
-La finestra resta sempre in primo piano; spostala dalla barra del titolo.
+### La finestrella di pausa
+
+La finestra principale è una finestra normale: puoi ridurla a icona o
+coprirla con il gioco. Per avere la pausa sempre a portata di mouse c'è una
+**finestrella piccola e scura**, sempre in primo piano, con dentro solo il
+bottone **PAUSA / RIPRENDI** e la scritta dello stato.
+
+- La sposti trascinando i puntini **::** a sinistra (o la scritta).
+  Ricorda la posizione.
+- Cliccarla non toglie il focus al gioco.
+- L'icona **☰** a destra riapre la finestra principale.
+- Si accende e si spegne con la casella **"Finestrella di pausa sempre in
+  primo piano"** nella finestra principale.
 
 ## Mouse → Frecce: impostazioni
 
