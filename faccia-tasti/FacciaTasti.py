@@ -282,6 +282,35 @@ def scarica_modello(stato=None):
 
 
 # ----------------------------------------------------------------------
+#  ELENCO DELLE WEBCAM
+# ----------------------------------------------------------------------
+
+MAX_WEBCAM = 6
+
+
+def elenca_webcam(cv2):
+    """Ritorna una lista di (indice, nome). Su Windows prova a leggere i nomi
+    veri con pygrabber (stesso ordine di DirectShow usato da OpenCV);
+    altrimenti prova ad aprire le webcam una per una."""
+    if os.name == "nt":
+        try:
+            from pygrabber.dshow_graph import FilterGraph
+            nomi = FilterGraph().get_input_devices()
+            if nomi:
+                return [(i, n) for i, n in enumerate(nomi)]
+        except Exception:
+            pass
+    trovate = []
+    for i in range(MAX_WEBCAM):
+        cap = cv2.VideoCapture(i, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(i)
+        ok = cap.isOpened()
+        cap.release()
+        if ok:
+            trovate.append((i, "Webcam %d" % i))
+    return trovate
+
+
+# ----------------------------------------------------------------------
 #  WEBCAM + RICONOSCIMENTO (gira in un thread separato)
 # ----------------------------------------------------------------------
 
@@ -299,6 +328,7 @@ class Riconoscitore(threading.Thread):
         self.riavvia_webcam = False
         self.calibra = 0           # fotogrammi di calibrazione testa rimasti
         self._cal_acc = []
+        self.elenco = None         # [(indice, nome)] delle webcam trovate
 
     def richiedi_calibrazione(self):
         self._cal_acc = []
@@ -325,6 +355,16 @@ class Riconoscitore(threading.Thread):
         )
         landmarker = vision.FaceLandmarker.create_from_options(opzioni)
 
+        self._stato("Cerco le webcam collegate...")
+        try:
+            elenco = elenca_webcam(cv2)
+        except Exception:
+            elenco = []
+        if not elenco:
+            elenco = [(i, "Webcam %d" % i) for i in range(3)]
+        with self.lock:
+            self.elenco = elenco
+
         cap = None
         t0 = time.monotonic()
         ultimo_ts = 0
@@ -336,12 +376,23 @@ class Riconoscitore(threading.Thread):
                 self.riavvia_webcam = False
                 if cap is not None:
                     cap.release()
-                cap = self._apri_webcam(cv2)
+                cap = self._apri_webcam(cv2, int(self.imp["webcam"]))
                 if cap is None:
-                    self._stato("Webcam %d non trovata. Prova un altro numero e premi 'Riavvia webcam'." % self.imp["webcam"])
-                    time.sleep(1.0)
+                    # quella salvata non va: provo le altre
+                    scelta = int(self.imp["webcam"])
+                    for idx, _nome in elenco:
+                        if idx == scelta:
+                            continue
+                        cap = self._apri_webcam(cv2, idx)
+                        if cap is not None:
+                            self.imp["webcam"] = idx
+                            salva_impostazioni(self.imp)
+                            break
+                if cap is None:
+                    self._stato("Nessuna webcam disponibile. Collegane una o chiudi il programma che la sta usando.")
+                    time.sleep(2.0)
                     continue
-                self._stato("Webcam %d aperta" % self.imp["webcam"])
+                self._stato("Uso: " + self.nome_webcam(int(self.imp["webcam"])))
 
             ok, frame = cap.read()
             if not ok:
@@ -398,8 +449,13 @@ class Riconoscitore(threading.Thread):
             pass
         self.motore.rilascia_tutto()
 
-    def _apri_webcam(self, cv2):
-        idx = int(self.imp["webcam"])
+    def nome_webcam(self, idx):
+        for i, n in (self.elenco or []):
+            if i == idx:
+                return n
+        return "Webcam %d" % idx
+
+    def _apri_webcam(self, cv2, idx):
         cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(idx)
         if not cap.isOpened():
             cap.release()
@@ -470,26 +526,41 @@ def avvia_finestra():
     btn_pausa.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 10))
     aggiorna_pausa()
 
-    ttk.Label(sinistra, text="Webcam numero:").grid(row=4, column=0, sticky="w")
-    var_cam = tk.IntVar(value=int(imp["webcam"]))
-    riga_cam = ttk.Frame(sinistra)
-    riga_cam.grid(row=4, column=1, sticky="e")
-    ttk.Spinbox(riga_cam, from_=0, to=5, width=3, textvariable=var_cam,
-                state="readonly").pack(side="left", padx=(0, 6))
+    ttk.Label(sinistra, text="Webcam da usare:").grid(row=4, column=0, columnspan=2,
+                                                        sticky="w", pady=(0, 2))
+    var_cam = tk.StringVar(value="Cerco le webcam...")
+    cb_cam = ttk.Combobox(sinistra, textvariable=var_cam, state="readonly", width=38)
+    cb_cam.grid(row=5, column=0, columnspan=2, sticky="ew")
+    voci_cam = {}      # testo mostrato -> indice
 
-    def riavvia_cam():
-        imp["webcam"] = int(var_cam.get())
+    def scelta_cam(*_):
+        idx = voci_cam.get(var_cam.get())
+        if idx is None or idx == int(imp["webcam"]):
+            return
+        imp["webcam"] = idx
         salva_impostazioni(imp)
         ric.riavvia_webcam = True
 
-    ttk.Button(riga_cam, text="Riavvia webcam", command=riavvia_cam).pack(side="left")
+    cb_cam.bind("<<ComboboxSelected>>", scelta_cam)
+
+    def aggiorna_elenco_cam(elenco):
+        voci_cam.clear()
+        for idx, nome in elenco:
+            voci_cam["%s  (n. %d)" % (nome, idx)] = idx
+        cb_cam["values"] = list(voci_cam.keys())
+        for testo, idx in voci_cam.items():
+            if idx == int(imp["webcam"]):
+                var_cam.set(testo)
+                break
+        else:
+            var_cam.set("Webcam %d non trovata" % int(imp["webcam"]))
 
     ttk.Button(sinistra, text="Ricalibra posizione testa (guarda dritto)",
-               command=ric.richiedi_calibrazione).grid(row=5, column=0, columnspan=2,
+               command=ric.richiedi_calibrazione).grid(row=6, column=0, columnspan=2,
                                                         sticky="ew", pady=(10, 4))
     ttk.Button(sinistra, text="Esci dal programma",
-               command=root.destroy).grid(row=6, column=0, columnspan=2,
-                                          sticky="ew", pady=(4, 0))
+               command=lambda: chiudi()).grid(row=7, column=0, columnspan=2,
+                                              sticky="ew", pady=(4, 0))
 
     # ---------- colonna destra: una riga per espressione ----------
     destra = ttk.Frame(root, padding=10)
@@ -551,6 +622,7 @@ def avvia_finestra():
 
     # ---------- aggiornamento periodico ----------
     foto = {"img": None}
+    stato_cam = {"elenco": None, "idx": None}
 
     def aggiorna():
         with ric.lock:
@@ -558,6 +630,12 @@ def avvia_finestra():
             faccia = ric.faccia
             ant = ric.anteprima
             msg = ric.messaggio
+            elenco = ric.elenco
+        if elenco is not None and (elenco != stato_cam["elenco"]
+                                   or int(imp["webcam"]) != stato_cam["idx"]):
+            stato_cam["elenco"] = elenco
+            stato_cam["idx"] = int(imp["webcam"])
+            aggiorna_elenco_cam(elenco)
         if ant is not None:
             img = Image.fromarray(ant)
             foto["img"] = ImageTk.PhotoImage(img)

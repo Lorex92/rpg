@@ -4,3 +4,4 @@ pynput
 Pillow
 numpy
 pydirectinput; sys_platform == "win32"
+pygrabber; sys_platform == "win32"

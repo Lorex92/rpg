@@ -82,8 +82,10 @@ titolo per non coprire il gioco.
   Se invece non scatta mai, spostala verso sinistra.
 - Serve una buona luce sul viso, meglio davanti che dietro (una finestra alle
   spalle rende il viso scuro).
-- Se hai più webcam, cambia il numero nella casella "Webcam numero" e premi
-  "Riavvia webcam".
+- Se hai più webcam, scegli quella giusta dal menu "Webcam da usare": il
+  programma passa subito a quella e se la ricorda. Se quella scelta non è
+  disponibile (scollegata o usata da un altro programma), passa da solo alla
+  prima che funziona.
 - Se la posizione della testa sembra sballata, premi "Ricalibra posizione
   testa" mentre guardi dritto.
 
@@ -94,9 +96,9 @@ titolo per non coprire il gioco.
 - **Il gioco ignora i tasti.** Alcuni giochi vanno avviati prima del
   programma, oppure serve avviare `avvia.bat` con clic destro → "Esegui come
   amministratore".
-- **"Webcam 0 non trovata".** Prova con 1 o 2 nella casella "Webcam numero" e
-  premi "Riavvia webcam". Controlla anche che un altro programma (per
-  esempio una videochiamata) non stia già usando la webcam.
+- **"Nessuna webcam disponibile".** Controlla che la webcam sia collegata e
+  che un altro programma (per esempio una videochiamata) non la stia già
+  usando. Poi scegli la webcam dal menu "Webcam da usare".
 - **Un tasto resta premuto.** Premi "METTI IN PAUSA": rilascia tutto.
 
 ## Privacy
