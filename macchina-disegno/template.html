@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Macchina che disegna</title>
+<style>
+  :root { --bg:#1d1612; --fg:#f3e9dc; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
+  body { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; }
+  canvas { width:min(100vw, calc((100vh - 60px) * 16 / 9)); height:auto; aspect-ratio:16/9; display:block; }
+  button { background:#3a2c22; color:var(--fg); border:1px solid #6b5443; border-radius:8px; padding:8px 16px; font-size:15px; cursor:pointer; }
+  body.capture button { display:none; }
+  body.capture canvas { width:1920px; height:1080px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<button id="again">Ricomincia</button>
+<script>
+const IMG_SRC = "data:image/jpeg;base64,__IMG__";
+const W = 1920, H = 1080;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+
+// ---------- layout ----------
+const PW = 675, PH = 900;                 // paper size
+const PC = { x: 960, y: 540 };            // paper centre
+const PROT = -2 * Math.PI / 180;          // paper rotation
+const BASE = { x: 1640, y: 560 };         // robot base
+const L1 = 600, L2 = 560;
+const TOOL = norm(-1, 0.22);              // tool points from the wrist toward its tip
+const TOOL_LEN = 78;                      // wrist -> tip
+const REST = { x: 1330, y: 250 };
+const PENCIL_SPOT = { x: 470, y: 250 };
+const CRAYON_PICK = { x: 470, y: 790 };
+const CRAYON_DROP = { x: 440, y: 560 };
+
+function norm(x, y) { const l = Math.hypot(x, y); return { x: x / l, y: y / l }; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function paperToWorld(p) {
+  const x = p.x - PW / 2, y = p.y - PH / 2, c = Math.cos(PROT), s = Math.sin(PROT);
+  return { x: PC.x + x * c - y * s, y: PC.y + x * s + y * c };
+}
+// deterministic noise
+function rnd(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+
+// ---------- paths (paper coordinates) ----------
+function zigzag(spacing, wob, margin, seed) {
+  const r = rnd(seed), pts = [];
+  let dir = 1;
+  for (let y = margin; y <= PH - margin + 0.1; y += spacing) {
+    const x0 = dir > 0 ? margin : PW - margin, x1 = dir > 0 ? PW - margin : margin;
+    const ph = r() * 6.28;
+    for (let i = 0; i <= 40; i++) {
+      const t = i / 40;
+      pts.push({ x: lerp(x0, x1, t), y: y + Math.sin(t * 26 + ph) * wob + (r() - .5) * wob * .6 });
+    }
+    dir = -dir;
+  }
+  return pts;
+}
+function withLength(pts) {
+  const out = []; let s = 0;
+  for (let i = 0; i < pts.length; i++) {
+    if (i) s += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    out.push({ x: pts[i].x, y: pts[i].y, s });
+  }
+  out.total = s; return out;
+}
+const SKETCH = withLength(zigzag(22, 5, 12, 7));
+const COLOR = withLength(zigzag(42, 9, 18, 11));
+function at(path, s) {
+  s = clamp(s, 0, path.total);
+  let lo = 0, hi = path.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (path[m].s <= s) lo = m; else hi = m; }
+  const a = path[lo], b = path[hi], t = (s - a.s) / ((b.s - a.s) || 1);
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), i: lo };
+}
+
+// ---------- timeline ----------
+const SK0 = paperToWorld(SKETCH[0]), CO0 = paperToWorld(COLOR[0]);
+const TL = [];
+let T = 0;
+function seg(o) { o.t0 = T; T += o.dur; o.t1 = T; TL.push(o); }
+seg({ kind: 'hold', dur: 1.2, p: REST, lift: 1 });
+seg({ kind: 'move', dur: 1.3, a: REST, b: SK0 });
+seg({ kind: 'draw', dur: 13, path: SKETCH, layer: 'sketch' });
+seg({ kind: 'move', dur: 1.3, a: paperToWorld(SKETCH[SKETCH.length - 1]), b: PENCIL_SPOT });
+seg({ kind: 'hold', dur: 0.6, p: PENCIL_SPOT, lift: 0, event: 'dropPencil' });
+seg({ kind: 'move', dur: 1.1, a: PENCIL_SPOT, b: CRAYON_PICK });
+seg({ kind: 'hold', dur: 0.6, p: CRAYON_PICK, lift: 0, event: 'pickCrayon' });
+seg({ kind: 'move', dur: 1.3, a: CRAYON_PICK, b: CO0 });
+seg({ kind: 'draw', dur: 12, path: COLOR, layer: 'color' });
+seg({ kind: 'move', dur: 1.3, a: paperToWorld(COLOR[COLOR.length - 1]), b: CRAYON_DROP });
+seg({ kind: 'hold', dur: 0.6, p: CRAYON_DROP, lift: 0, event: 'dropCrayon' });
+seg({ kind: 'move', dur: 1.3, a: CRAYON_DROP, b: REST });
+seg({ kind: 'hold', dur: 3.2, p: REST, lift: 1 });
+const DURATION = T;
+const EV = {}; TL.forEach(s => { if (s.event) EV[s.event] = s.t0 + s.dur * 0.5; });
+
+function stateAt(t) {
+  const s = TL.find(s => t < s.t1) || TL[TL.length - 1];
+  const p = clamp((t - s.t0) / s.dur, 0, 1);
+  if (s.kind === 'hold') {
+    // tool briefly touches down in the middle of a "place/pick" hold
+    const lift = s.lift ? 1 : 0.35 * (1 - Math.sin(Math.PI * p));
+    return { tip: s.p, lift };
+  }
+  if (s.kind === 'move') {
+    const e = ease(p);
+    const tip = { x: lerp(s.a.x, s.b.x, e), y: lerp(s.a.y, s.b.y, e) };
+    const prevHeld = TL[TL.indexOf(s) - 1], nextHeld = TL[TL.indexOf(s) + 1];
+    const l0 = prevHeld && prevHeld.kind === 'hold' && prevHeld.lift ? 1 : 0;
+    const l1 = nextHeld && nextHeld.kind === 'hold' && nextHeld.lift ? 1 : 0;
+    const lift = Math.max(lerp(l0, l1, e), Math.sin(Math.PI * p));
+    return { tip, lift };
+  }
+  const q = at(s.path, p * s.path.total);
+  return { tip: paperToWorld(q), lift: 0, drawing: s, local: q };
+}
+
+// ---------- assets ----------
+const img = new Image();
+function mk(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+let tableCv, vignetteCv, sketchCv, colorCv, sketchMask, colorMask, tmpA, work, small;
+
+function buildTable() {
+  tableCv = mk(W, H); const g = tableCv.getContext('2d');
+  const r = rnd(3);
+  const planks = [0, 270, 540, 810, 1080];
+  const tones = ['#7a4f31', '#86593a', '#734a2d', '#80553600'];
+  for (let i = 0; i < 4; i++) {
+    const y0 = planks[i], y1 = planks[i + 1];
+    const gr = g.createLinearGradient(0, y0, 0, y1);
+    const base = ['#7b5034', '#865b3c', '#74492e', '#815638'][i];
+    gr.addColorStop(0, base); gr.addColorStop(.5, ['#845a3b', '#8f6444', '#7c5135', '#8a5f40'][i]); gr.addColorStop(1, base);
+    g.fillStyle = gr; g.fillRect(0, y0, W, y1 - y0);
+    // grain
+    for (let k = 0; k < 70; k++) {
+      const yy = y0 + r() * (y1 - y0), amp = 2 + r() * 7, f = 0.002 + r() * 0.004, ph = r() * 7;
+      g.strokeStyle = `rgba(${r() < .5 ? '40,22,10' : '160,110,70'},${0.06 + r() * 0.12})`;
+      g.lineWidth = 0.6 + r() * 2;
+      g.beginPath();
+      for (let x = 0; x <= W; x += 20) {
+        const y = yy + Math.sin(x * f + ph) * amp + Math.sin(x * f * 3.1 + ph * 2) * amp * .3;
+        x ? g.lineTo(x, y) : g.moveTo(x, y);
+      }
+      g.stroke();
+    }
+    // a knot
+    const kx = 200 + r() * 1500, ky = y0 + 60 + r() * 150;
+    for (let k = 0; k < 7; k++) {
+      g.strokeStyle = `rgba(45,25,12,${0.18 - k * 0.02})`; g.lineWidth = 1.5;
+      g.beginPath(); g.ellipse(kx, ky, 10 + k * 9, 4 + k * 3, 0, 0, Math.PI * 2); g.stroke();
+    }
+    // seam
+    if (i > 0) { g.fillStyle = 'rgba(30,16,8,.55)'; g.fillRect(0, y0 - 2, W, 3); g.fillStyle = 'rgba(200,150,100,.15)'; g.fillRect(0, y0 + 1, W, 1); }
+  }
+  vignetteCv = mk(W, H); const v = vignetteCv.getContext('2d');
+  const vg = v.createRadialGradient(W * .55, H * .45, 300, W * .5, H * .5, 1250);
+  vg.addColorStop(0, 'rgba(255,230,190,0.10)'); vg.addColorStop(.55, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(10,4,0,.55)');
+  v.fillStyle = vg; v.fillRect(0, 0, W, H);
+}
+
+function buildLayers() {
+  colorCv = mk(PW, PH); const c = colorCv.getContext('2d');
+  c.drawImage(img, 0, 0, PW, PH);
+  // pencil sketch from the image: Sobel edges + light graphite shading
+  const src = c.getImageData(0, 0, PW, PH).data;
+  const lum = new Float32Array(PW * PH);
+  for (let i = 0; i < PW * PH; i++) lum[i] = (src[i * 4] * .3 + src[i * 4 + 1] * .59 + src[i * 4 + 2] * .11) / 255;
+  sketchCv = mk(PW, PH); const s = sketchCv.getContext('2d');
+  const out = s.createImageData(PW, PH), o = out.data;
+  const r = rnd(5);
+  for (let y = 1; y < PH - 1; y++) for (let x = 1; x < PW - 1; x++) {
+    const i = y * PW + x;
+    const gx = -lum[i - PW - 1] - 2 * lum[i - 1] - lum[i + PW - 1] + lum[i - PW + 1] + 2 * lum[i + 1] + lum[i + PW + 1];
+    const gy = -lum[i - PW - 1] - 2 * lum[i - PW] - lum[i - PW + 1] + lum[i + PW - 1] + 2 * lum[i + PW] + lum[i + PW + 1];
+    const edge = clamp((Math.hypot(gx, gy) - 0.18) * 1.9, 0, 1);
+    // diagonal hatching in dark areas
+    const hatch = ((x + y) % 7 < 2 ? 1 : 0) * clamp((0.62 - lum[i]) * 1.6, 0, 1);
+    const shade = clamp((1 - lum[i]) * 0.22, 0, 1);
+    const a = clamp(Math.max(edge * 0.9, hatch * 0.45, shade) * (0.85 + r() * 0.3), 0, 1);
+    o[i * 4] = 52; o[i * 4 + 1] = 52; o[i * 4 + 2] = 62; o[i * 4 + 3] = a * 255;
+  }
+  s.putImageData(out, 0, 0);
+  small = mk(68, 90); small.getContext('2d').drawImage(img, 0, 0, 68, 90);
+  small.data = small.getContext('2d').getImageData(0, 0, 68, 90).data;
+  sketchMask = mk(PW, PH); colorMask = mk(PW, PH); tmpA = mk(PW, PH); work = mk(PW, PH);
+}
+
+// crayons lying on the table
+const CRAYONS = [
+  { x: 360, y: 700, a: 0.35, c: '#d8402f' }, { x: 395, y: 735, a: 0.2, c: '#f0b12b' },
+  { x: 345, y: 785, a: -0.15, c: '#4f9d3a' }, { x: 470, y: 790, a: 0.05, c: '#8a5a33', pick: true },
+  { x: 385, y: 845, a: 0.5, c: '#3d78c2' }, { x: 470, y: 880, a: -0.35, c: '#e98fa8' },
+  { x: 330, y: 930, a: 0.1, c: '#9a9a9a' }, { x: 520, y: 950, a: 0.6, c: '#f3e3b0' },
+];
+
+// ---------- drawing primitives ----------
+function shadowed(fn, lift) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(15,6,0,0.45)';
+  ctx.shadowBlur = 14 + lift * 22; ctx.shadowOffsetX = 10 + lift * 20; ctx.shadowOffsetY = 14 + lift * 26;
+  fn(); ctx.restore();
+}
+function pencil(x, y, ang, len) {   // tip at (x,y), body extends along ang (away from tip)
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  const w = 16;
+  ctx.fillStyle = '#e9c9a0'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(30, -w / 2); ctx.lineTo(30, w / 2); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#3b3b44'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(10, -w / 6); ctx.lineTo(10, w / 6); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#f2b628'; ctx.fillRect(30, -w / 2, len - 52, w);
+  ctx.fillStyle = '#d99a14'; ctx.fillRect(30, -w / 2, len - 52, w / 3);
+  ctx.fillStyle = '#ffd25a'; ctx.fillRect(30, w / 6, len - 52, w / 5);
+  ctx.fillStyle = '#b9bcc4'; ctx.fillRect(len - 22, -w / 2, 10, w);
+  ctx.fillStyle = '#e88a8a'; ctx.beginPath(); ctx.roundRect(len - 12, -w / 2, 12, w, [0, 4, 4, 0]); ctx.fill();
+  ctx.restore();
+}
+function crayon(x, y, ang, len, col) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  const w = 18;
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, -3); ctx.lineTo(20, -w / 2); ctx.lineTo(20, w / 2); ctx.lineTo(0, 3); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(20, -w / 2, len - 20, w, [0, 5, 5, 0]); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.22)'; ctx.fillRect(20, -w / 2 + 2, len - 24, 4);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(20, w / 2 - 4, len - 24, 4);
+  ctx.fillStyle = 'rgba(30,20,10,.55)'; ctx.fillRect(36, -w / 2, len - 60, w);   // paper wrapper
+  ctx.fillStyle = col; ctx.globalAlpha = .55; ctx.fillRect(36, -w / 2, len - 60, w); ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(44, -w / 2); ctx.lineTo(44, w / 2); ctx.moveTo(len - 32, -w / 2); ctx.lineTo(len - 32, w / 2); ctx.stroke();
+  ctx.restore();
+}
+function link(a, b, w, col, dark) {
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.strokeStyle = dark; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  ctx.strokeStyle = col; ctx.lineWidth = w - 8;
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  // highlight strip
+  const n = norm(b.y - a.y, a.x - b.x);
+  ctx.strokeStyle = 'rgba(255,255,255,.28)'; ctx.lineWidth = (w - 8) * .22;
+  ctx.beginPath(); ctx.moveTo(a.x + n.x * w * .18, a.y + n.y * w * .18); ctx.lineTo(b.x + n.x * w * .18, b.y + n.y * w * .18); ctx.stroke();
+  ctx.restore();
+}
+function joint(p, r) {
+  ctx.save();
+  const g = ctx.createRadialGradient(p.x - r * .3, p.y - r * .3, 2, p.x, p.y, r);
+  g.addColorStop(0, '#6a6f78'); g.addColorStop(1, '#2a2d33');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#9aa0aa';
+  for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + .6; ctx.beginPath(); ctx.arc(p.x + Math.cos(a) * r * .6, p.y + Math.sin(a) * r * .6, r * .1, 0, 7); ctx.fill(); }
+  ctx.restore();
+}
+
+function ik(target) {
+  const dx = target.x - BASE.x, dy = target.y - BASE.y;
+  const d = clamp(Math.hypot(dx, dy), Math.abs(L1 - L2) + 1, L1 + L2 - 1);
+  const a2 = Math.acos(clamp((d * d - L1 * L1 - L2 * L2) / (2 * L1 * L2), -1, 1));
+  const a1 = Math.atan2(dy, dx) + Math.atan2(L2 * Math.sin(a2), L1 + L2 * Math.cos(a2));
+  return { x: BASE.x + L1 * Math.cos(a1), y: BASE.y + L1 * Math.sin(a1) };
+}
+
+function crayonColor(local) {
+  // the most saturated colour a little around the tip, so the crayon reads as "the colour being laid down"
+  const d = small.data; let best = [140, 110, 80], bs = -1;
+  for (let ox = -2; ox <= 2; ox++) for (let oy = -1; oy <= 1; oy++) {
+    const x = clamp(Math.round(local.x / PW * 67) + ox * 2, 0, 67), y = clamp(Math.round(local.y / PH * 89) + oy, 0, 89);
+    const i = (y * 68 + x) * 4, r = d[i], g = d[i + 1], b = d[i + 2];
+    const sat = Math.max(r, g, b) - Math.min(r, g, b);
+    if (sat > bs) { bs = sat; best = [r, g, b]; }
+  }
+  return `rgb(${best[0]},${best[1]},${best[2]})`;
+}
+
+// ---------- incremental reveal ----------
+const drawn = new Map();
+function resetReveal() {
+  drawn.clear();
+  sketchMask.getContext('2d').clearRect(0, 0, PW, PH);
+  colorMask.getContext('2d').clearRect(0, 0, PW, PH);
+}
+function strokeMask(mask, path, s0, s1, w, seed) {
+  const m = mask.getContext('2d');
+  m.save(); m.lineCap = 'round'; m.lineJoin = 'round'; m.strokeStyle = '#000';
+  m.shadowColor = '#000'; m.shadowBlur = w * .35;
+  m.lineWidth = w;
+  const a = at(path, s0), b = at(path, s1);
+  m.beginPath(); m.moveTo(a.x, a.y);
+  for (let i = a.i + 1; i <= b.i; i++) m.lineTo(path[i].x, path[i].y);
+  m.lineTo(b.x, b.y); m.stroke(); m.restore();
+}
+function advance(t) {
+  for (const s of TL) {
+    if (s.kind !== 'draw' || t < s.t0) continue;
+    const target = clamp((t - s.t0) / s.dur, 0, 1) * s.path.total;
+    const done = drawn.get(s) || 0;
+    if (target > done) {
+      const mask = s.layer === 'sketch' ? sketchMask : colorMask;
+      strokeMask(mask, s.path, Math.max(0, done - 2), target, s.layer === 'sketch' ? 30 : 66);
+      drawn.set(s, target);
+    }
+  }
+}
+
+// ---------- frame ----------
+let lastT = -1;
+function render(t) {
+  if (t < lastT) resetReveal();
+  lastT = t;
+  advance(t);
+  const st = stateAt(t);
+
+  ctx.drawImage(tableCv, 0, 0);
+
+  // compose paper
+  const w = work.getContext('2d'), a = tmpA.getContext('2d');
+  w.globalCompositeOperation = 'source-over';
+  w.fillStyle = '#fbf8f1'; w.fillRect(0, 0, PW, PH);
+  a.globalCompositeOperation = 'source-over'; a.clearRect(0, 0, PW, PH);
+  a.drawImage(sketchCv, 0, 0); a.globalCompositeOperation = 'destination-in'; a.drawImage(sketchMask, 0, 0);
+  w.drawImage(tmpA, 0, 0);
+  a.globalCompositeOperation = 'source-over'; a.clearRect(0, 0, PW, PH);
+  a.drawImage(colorCv, 0, 0); a.globalCompositeOperation = 'destination-in'; a.drawImage(colorMask, 0, 0);
+  w.drawImage(tmpA, 0, 0);
+
+  ctx.save(); ctx.translate(PC.x, PC.y); ctx.rotate(PROT);
+  ctx.shadowColor = 'rgba(20,8,0,.5)'; ctx.shadowBlur = 30; ctx.shadowOffsetX = 8; ctx.shadowOffsetY = 14;
+  ctx.fillStyle = '#fbf8f1'; ctx.fillRect(-PW / 2, -PH / 2, PW, PH);
+  ctx.shadowColor = 'transparent';
+  ctx.drawImage(work, -PW / 2, -PH / 2);
+  ctx.restore();
+
+  // things lying on the table
+  const pickedUp = t >= EV.pickCrayon, putDown = t >= EV.dropCrayon, pencilDown = t >= EV.dropPencil;
+  for (const c of CRAYONS) {
+    if (c.pick && pickedUp) continue;
+    shadowed(() => crayon(c.x, c.y, c.a + Math.PI, 150, c.c), 0);
+  }
+  if (pencilDown) shadowed(() => pencil(PENCIL_SPOT.x, PENCIL_SPOT.y, Math.atan2(-TOOL.y, -TOOL.x), 230), 0);
+  if (putDown) shadowed(() => crayon(CRAYON_DROP.x, CRAYON_DROP.y, Math.atan2(-TOOL.y, -TOOL.x), 150, '#8a5a33'), 0);
+  // eraser, for company
+  shadowed(() => { ctx.save(); ctx.translate(500, 400); ctx.rotate(-.3); ctx.fillStyle = '#f1e6d6'; ctx.beginPath(); ctx.roundRect(-34, -18, 68, 36, 6); ctx.fill(); ctx.fillStyle = '#3d6fb0'; ctx.fillRect(-10, -18, 44, 36); ctx.restore(); }, 0);
+
+  // robot
+  const lift = st.lift;
+  const tip = st.tip;
+  const wrist = { x: tip.x - TOOL.x * TOOL_LEN, y: tip.y - TOOL.y * TOOL_LEN };
+  const elbow = ik(wrist);
+  const toolAng = Math.atan2(-TOOL.y, -TOOL.x);
+  const holding = t < EV.dropPencil ? 'pencil' : (t >= EV.pickCrayon && t < EV.dropCrayon ? 'crayon' : null);
+  const liftScale = 1 + lift * 0.025;
+
+  // base
+  shadowed(() => {
+    ctx.save(); ctx.translate(BASE.x, BASE.y);
+    ctx.fillStyle = '#3a3f47'; ctx.beginPath(); ctx.roundRect(-110, -130, 300, 260, 34); ctx.fill();
+    ctx.fillStyle = '#4a505a'; ctx.beginPath(); ctx.roundRect(-100, -120, 280, 240, 28); ctx.fill();
+    // little panel
+    ctx.fillStyle = '#23262b'; ctx.beginPath(); ctx.roundRect(80, -70, 80, 140, 10); ctx.fill();
+    const blink = (Math.floor(t * 2) % 2) ? '#7cff9a' : '#2f8a45';
+    ctx.fillStyle = blink; ctx.beginPath(); ctx.arc(120, -40, 9, 0, 7); ctx.fill();
+    ctx.fillStyle = st.drawing ? '#ffb347' : '#5a4630'; ctx.beginPath(); ctx.arc(120, -8, 9, 0, 7); ctx.fill();
+    ctx.fillStyle = '#c94a3a'; ctx.beginPath(); ctx.arc(120, 38, 16, 0, 7); ctx.fill();
+    ctx.fillStyle = '#e46a58'; ctx.beginPath(); ctx.arc(116, 34, 7, 0, 7); ctx.fill();
+    // turntable
+    const g = ctx.createRadialGradient(-10, -10, 10, 0, 0, 92);
+    g.addColorStop(0, '#7b828e'); g.addColorStop(1, '#2d3137');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 92, 0, 7); ctx.fill();
+    ctx.restore();
+  }, 0);
+
+  ctx.save();
+  ctx.translate(BASE.x, BASE.y); ctx.scale(liftScale, liftScale); ctx.translate(-BASE.x, -BASE.y);
+  shadowed(() => link(BASE, elbow, 74, '#e8932f', '#a85f16'), 0.5 + lift * .5);
+  joint(BASE, 46);
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(elbow.x, elbow.y); ctx.scale(liftScale, liftScale); ctx.translate(-elbow.x, -elbow.y);
+  // tool held by the gripper
+  if (holding === 'pencil') shadowed(() => pencil(tip.x, tip.y, toolAng, 200), lift);
+  if (holding === 'crayon') {
+    const col = st.drawing ? crayonColor(st.local) : '#8a5a33';
+    shadowed(() => crayon(tip.x, tip.y, toolAng, 150, col), lift);
+  }
+  shadowed(() => link(elbow, wrist, 58, '#e8932f', '#a85f16'), 0.6 + lift * .6);
+  // gripper fingers around the tool
+  ctx.save(); ctx.translate(wrist.x, wrist.y); ctx.rotate(Math.atan2(TOOL.y, TOOL.x));
+  const open = holding ? 0 : 8;
+  ctx.fillStyle = '#5b616b';
+  ctx.beginPath(); ctx.roundRect(-6, -26 - open, 48, 12, 4); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(-6, 14 + open, 48, 12, 4); ctx.fill();
+  ctx.fillStyle = '#3a3f47'; ctx.beginPath(); ctx.roundRect(-30, -28 - open, 30, 56 + open * 2, 8); ctx.fill();
+  ctx.restore();
+  joint(elbow, 36);
+  joint(wrist, 24);
+  ctx.restore();
+
+  ctx.drawImage(vignetteCv, 0, 0);
+}
+
+// ---------- boot ----------
+window.__duration = DURATION;
+window.__ready = new Promise(res => {
+  img.onload = () => { buildTable(); buildLayers(); render(0); res(); };
+  img.src = IMG_SRC;
+});
+if (!location.hash.includes('capture')) {
+  let start = null;
+  window.__ready.then(() => {
+    const loop = now => {
+      if (start === null) start = now;
+      let t = (now - start) / 1000;
+      if (t > DURATION) { start = now; t = 0; }
+      render(t); requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  });
+  document.getElementById('again').onclick = () => { start = null; };
+} else {
+  document.body.classList.add('capture');
+}
+window.__render = render;
+</script>
+</body>
+</html>
