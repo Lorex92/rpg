@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Macchina che disegna 3D</title>
+<style>
+  :root { --bg:#14100d; --fg:#f3e9dc; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
+  body { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:0 16px; box-sizing:border-box; }
+  #c { width:min(100%, calc((100vh - 70px) * 9 / 16)); height:auto; aspect-ratio:9/16; display:block; }
+  #g { position:absolute; left:-99999px; top:0; }
+  button { background:#3a2c22; color:var(--fg); border:1px solid #6b5443; border-radius:8px; padding:8px 16px; font-size:15px; cursor:pointer; }
+  body.capture button { display:none; }
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<canvas id="g" width="1080" height="1920"></canvas>
+<button id="again">Ricomincia</button>
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const IMG_SRC = "data:image/jpeg;base64,__IMG__";
+const W = 1080, H = 1920;
+const out = document.getElementById('c').getContext('2d');
+const glCanvas = document.getElementById('g');
+
+// ---------- helpers ----------
+function norm(x, y) { const l = Math.hypot(x, y); return { x: x / l, y: y / l }; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function ease(t) { return t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function rnd(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+function hash(x, y, s) { let h = (x * 374761393 + y * 668265263 + s * 2147483647) | 0; h = (h ^ (h >>> 13)) * 1274126177 | 0; return ((h ^ (h >>> 16)) >>> 0) / 4294967296; }
+function vnoise(x, y, s) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  return lerp(lerp(hash(xi, yi, s), hash(xi + 1, yi, s), u), lerp(hash(xi, yi + 1, s), hash(xi + 1, yi + 1, s), u), v);
+}
+function fbm(x, y, s, oct = 4) { let v = 0, a = .5, f = 1; for (let i = 0; i < oct; i++) { v += a * vnoise(x * f, y * f, s + i * 17); f *= 2; a *= .5; } return v; }
+function mk(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+// ---------- layout (centimetres; x right, z toward the camera, y up) ----------
+const PW = 900, PH = 1200;                // paper texture resolution
+const PAPER_W = 21, PAPER_D = 28;
+const PROT = 2.0 * Math.PI / 180;
+const BASE = { x: 20, z: -5 };
+const SH = 9.5, L1 = 21, L2 = 21;         // shoulder height, link lengths
+const WRIST_TO_TIP = 9.5;
+const REST = { x: 10, z: -2 };
+const PENCIL_SPOT = { x: -4, z: 19.5 };
+const CRAYON_PICK = { x: 7.5, z: 21.5 };
+const CRAYON_DROP = { x: 14, z: 17 };
+
+function paperToWorld(p) {
+  const x = (p.x / PW - .5) * PAPER_W, z = (p.y / PH - .5) * PAPER_D, c = Math.cos(PROT), s = Math.sin(PROT);
+  return { x: x * c + z * s, z: -x * s + z * c };
+}
+
+// ---------- paths (paper texture coordinates) ----------
+function zigzag(spacing, wob, margin, seed) {
+  const r = rnd(seed), pts = []; let dir = 1;
+  for (let y = margin; y <= PH - margin + 0.1; y += spacing) {
+    const x0 = dir > 0 ? margin : PW - margin, x1 = dir > 0 ? PW - margin : margin, ph = r() * 6.28;
+    for (let i = 0; i <= 40; i++) { const t = i / 40; pts.push({ x: lerp(x0, x1, t), y: y + Math.sin(t * 24 + ph) * wob + (r() - .5) * wob * .6 }); }
+    dir = -dir;
+  }
+  return pts;
+}
+function withLength(pts) {
+  const o = []; let s = 0;
+  for (let i = 0; i < pts.length; i++) { if (i) s += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y); o.push({ x: pts[i].x, y: pts[i].y, s }); }
+  o.total = s; return o;
+}
+const SKETCH = withLength(zigzag(28, 6, 15, 7));
+const COLOR = withLength(zigzag(54, 12, 22, 11));
+function at(path, s) {
+  s = clamp(s, 0, path.total); let lo = 0, hi = path.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (path[m].s <= s) lo = m; else hi = m; }
+  const a = path[lo], b = path[hi], t = (s - a.s) / ((b.s - a.s) || 1);
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), i: lo };
+}
+
+// ---------- timeline ----------
+const SK0 = paperToWorld(SKETCH[0]), CO0 = paperToWorld(COLOR[0]);
+const TL = []; let T = 0;
+function seg(o) { o.t0 = T; T += o.dur; o.t1 = T; TL.push(o); }
+seg({ kind: 'hold', dur: 1.2, p: REST, lift: 1 });
+seg({ kind: 'move', dur: 1.4, a: REST, b: SK0 });
+seg({ kind: 'draw', dur: 13, path: SKETCH, layer: 'sketch' });
+seg({ kind: 'move', dur: 1.4, a: paperToWorld(SKETCH[SKETCH.length - 1]), b: PENCIL_SPOT });
+seg({ kind: 'hold', dur: 0.7, p: PENCIL_SPOT, lift: 0, event: 'dropPencil' });
+seg({ kind: 'move', dur: 1.1, a: PENCIL_SPOT, b: CRAYON_PICK });
+seg({ kind: 'hold', dur: 0.7, p: CRAYON_PICK, lift: 0, event: 'pickCrayon' });
+seg({ kind: 'move', dur: 1.5, a: CRAYON_PICK, b: CO0 });
+seg({ kind: 'draw', dur: 12, path: COLOR, layer: 'color' });
+seg({ kind: 'move', dur: 1.3, a: paperToWorld(COLOR[COLOR.length - 1]), b: CRAYON_DROP });
+seg({ kind: 'hold', dur: 0.7, p: CRAYON_DROP, lift: 0, event: 'dropCrayon' });
+seg({ kind: 'move', dur: 1.4, a: CRAYON_DROP, b: REST });
+seg({ kind: 'hold', dur: 3.2, p: REST, lift: 1 });
+const DURATION = T;
+const EV = {}; TL.forEach(s => { if (s.event) EV[s.event] = s.t0 + s.dur * 0.5; });
+
+function stateAt(t) {
+  const s = TL.find(s => t < s.t1) || TL[TL.length - 1];
+  const p = clamp((t - s.t0) / s.dur, 0, 1);
+  if (s.kind === 'hold') return { tip: s.p, lift: s.lift ? 1 : 0.4 * (1 - Math.sin(Math.PI * p)) };
+  if (s.kind === 'move') {
+    const e = ease(p), i = TL.indexOf(s), pv = TL[i - 1], nx = TL[i + 1];
+    const l0 = pv && pv.kind === 'hold' && pv.lift ? 1 : 0, l1 = nx && nx.kind === 'hold' && nx.lift ? 1 : 0;
+    return { tip: { x: lerp(s.a.x, s.b.x, e), z: lerp(s.a.z, s.b.z, e) }, lift: Math.max(lerp(l0, l1, e), Math.sin(Math.PI * p)) };
+  }
+  const q = at(s.path, p * s.path.total);
+  return { tip: paperToWorld(q), lift: 0, drawing: s, local: q };
+}
+
+// ---------- 2D textures ----------
+const img = new Image();
+let sketchCv, colorCv, sketchMask, colorMask, tmpA, work, paperTex, small, grain = [], vignette;
+
+function woodCanvas() {
+  const S = 2048, c = mk(S, S), g = c.getContext('2d'), im = g.createImageData(S, S), d = im.data;
+  const plankH = 160;   // ~16 cm planks on a texture that covers the whole 200 cm table
+  const dark = [58, 33, 18], mid = [112, 70, 41], light = [158, 106, 64];
+  for (let y = 0; y < S; y++) {
+    const pk = Math.floor(y / plankH), py = y % plankH, sd = pk * 31 + 5, tone = 0.88 + hash(pk, 3, 9) * 0.22;
+    for (let x = 0; x < S; x++) {
+      const xx = x * 2.5 + pk * 977, pys = py * 2.4;
+      const warp = fbm(xx * 0.0016, pys * 0.008, sd, 3);
+      const ring = Math.sin((pys + warp * 150) * 0.2 + fbm(xx * 0.0007, pys * 0.003, sd + 3, 2) * 9);
+      const fine = fbm(xx * 0.004, pys * 0.22, sd + 7, 3);
+      const pore = vnoise(xx * 0.22, pys * 1.6, sd + 11) > 0.93 ? -0.22 : 0;
+      const k = clamp(0.5 + ring * 0.22 + (fine - 0.5) * 0.45 + pore, 0, 1);
+      const col = k < .5 ? dark.map((v, i) => lerp(v, mid[i], k * 2)) : mid.map((v, i) => lerp(v, light[i], k * 2 - 1));
+      let e = 1; if (py < 2) e = 0.35 + py * 0.25; else if (py < 4) e = 1.1; else if (py > plankH - 5) e = 0.8;
+      const i = (y * S + x) * 4; d[i] = col[0] * tone * e; d[i + 1] = col[1] * tone * e; d[i + 2] = col[2] * tone * e; d[i + 3] = 255;
+    }
+  }
+  g.putImageData(im, 0, 0);
+  return c;
+}
+
+function buildLayers() {
+  paperTex = mk(PW, PH); const p = paperTex.getContext('2d');
+  const pi = p.createImageData(PW, PH), pd = pi.data;
+  for (let y = 0; y < PH; y++) for (let x = 0; x < PW; x++) {
+    const n = (fbm(x * 0.06, y * 0.06, 41, 3) - .5) * 9 + (hash(x, y, 2) - .5) * 5;
+    const i = (y * PW + x) * 4; pd[i] = 247 + n; pd[i + 1] = 243 + n; pd[i + 2] = 233 + n; pd[i + 3] = 255;
+  }
+  p.putImageData(pi, 0, 0);
+
+  colorCv = mk(PW, PH); const c = colorCv.getContext('2d');
+  c.drawImage(img, 0, 0, PW, PH);
+  const src = c.getImageData(0, 0, PW, PH).data, lum = new Float32Array(PW * PH);
+  for (let i = 0; i < PW * PH; i++) lum[i] = (src[i * 4] * .3 + src[i * 4 + 1] * .59 + src[i * 4 + 2] * .11) / 255;
+  const ci = c.getImageData(0, 0, PW, PH), cd = ci.data;
+  for (let y = 0; y < PH; y++) for (let x = 0; x < PW; x++) {
+    const i = (y * PW + x) * 4, tooth = 0.9 + (fbm(x * 0.3, y * 0.3, 77, 2) - .5) * 0.35;
+    for (let k = 0; k < 3; k++) cd[i + k] = 255 - (255 - cd[i + k]) * clamp(tooth, 0, 1.05);
+  }
+  c.putImageData(ci, 0, 0);
+
+  sketchCv = mk(PW, PH); const s = sketchCv.getContext('2d');
+  const so = s.createImageData(PW, PH), o = so.data, r = rnd(5);
+  for (let y = 1; y < PH - 1; y++) for (let x = 1; x < PW - 1; x++) {
+    const i = y * PW + x;
+    const gx = -lum[i - PW - 1] - 2 * lum[i - 1] - lum[i + PW - 1] + lum[i - PW + 1] + 2 * lum[i + 1] + lum[i + PW + 1];
+    const gy = -lum[i - PW - 1] - 2 * lum[i - PW] - lum[i - PW + 1] + lum[i + PW - 1] + 2 * lum[i + PW] + lum[i + PW + 1];
+    const edge = clamp((Math.hypot(gx, gy) - 0.15) * 2.0, 0, 1);
+    const hatch = ((x + y) % 8 < 2 ? 1 : 0) * clamp((0.62 - lum[i]) * 1.6, 0, 1);
+    const shade = clamp((1 - lum[i]) * 0.22, 0, 1);
+    const tooth = 0.75 + fbm(x * 0.45, y * 0.45, 91, 2) * 0.5;
+    const a = clamp(Math.max(edge * 0.85, hatch * 0.4, shade) * tooth * (0.9 + r() * 0.2), 0, 1);
+    o[i * 4] = 48; o[i * 4 + 1] = 48; o[i * 4 + 2] = 56; o[i * 4 + 3] = a * 255;
+  }
+  s.putImageData(so, 0, 0);
+  small = mk(68, 90); const sc = small.getContext('2d'); sc.drawImage(img, 0, 0, 68, 90); small.data = sc.getImageData(0, 0, 68, 90).data;
+  sketchMask = mk(PW, PH); colorMask = mk(PW, PH); tmpA = mk(PW, PH); work = mk(PW, PH);
+
+  for (let k = 0; k < 4; k++) {
+    const g = mk(W / 2, H / 2), gc = g.getContext('2d'), gi = gc.createImageData(W / 2, H / 2), gd = gi.data, rr = rnd(100 + k);
+    for (let i = 0; i < gd.length; i += 4) { const v = 128 + (rr() - .5) * 70; gd[i] = gd[i + 1] = gd[i + 2] = v; gd[i + 3] = 255; }
+    gc.putImageData(gi, 0, 0); grain.push(g);
+  }
+  vignette = mk(W, H); const v = vignette.getContext('2d');
+  const vg = v.createRadialGradient(W * .5, H * .42, 300, W * .5, H * .5, 1250);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(.6, 'rgba(0,0,0,0.05)'); vg.addColorStop(1, 'rgba(0,0,0,0.5)');
+  v.fillStyle = vg; v.fillRect(0, 0, W, H);
+}
+
+function crayonColor(local) {
+  const d = small.data; let best = [130, 84, 50], bs = -1;
+  for (let ox = -2; ox <= 2; ox++) for (let oy = -1; oy <= 1; oy++) {
+    const x = clamp(Math.round(local.x / PW * 67) + ox * 2, 0, 67), y = clamp(Math.round(local.y / PH * 89) + oy, 0, 89);
+    const i = (y * 68 + x) * 4, sat = Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]);
+    if (sat > bs) { bs = sat; best = [d[i], d[i + 1], d[i + 2]]; }
+  }
+  return best;
+}
+
+// ---------- incremental reveal ----------
+const drawn = new Map();
+function resetReveal() { drawn.clear(); sketchMask.getContext('2d').clearRect(0, 0, PW, PH); colorMask.getContext('2d').clearRect(0, 0, PW, PH); }
+function strokeMask(mask, path, s0, s1, w) {
+  const m = mask.getContext('2d');
+  m.save(); m.lineCap = 'round'; m.lineJoin = 'round'; m.strokeStyle = '#000'; m.shadowColor = '#000'; m.shadowBlur = w * .35; m.lineWidth = w;
+  const a = at(path, s0), b = at(path, s1);
+  m.beginPath(); m.moveTo(a.x, a.y); for (let i = a.i + 1; i <= b.i; i++) m.lineTo(path[i].x, path[i].y); m.lineTo(b.x, b.y); m.stroke(); m.restore();
+}
+function advance(t) {
+  let changed = false;
+  for (const s of TL) {
+    if (s.kind !== 'draw' || t < s.t0) continue;
+    const target = clamp((t - s.t0) / s.dur, 0, 1) * s.path.total, done = drawn.get(s) || 0;
+    if (target > done) { strokeMask(s.layer === 'sketch' ? sketchMask : colorMask, s.path, Math.max(0, done - 2), target, s.layer === 'sketch' ? 40 : 84); drawn.set(s, target); changed = true; }
+  }
+  return changed;
+}
+function composePaper() {
+  const w = work.getContext('2d'), a = tmpA.getContext('2d');
+  w.globalCompositeOperation = 'source-over'; w.drawImage(paperTex, 0, 0);
+  w.globalCompositeOperation = 'multiply';
+  a.globalCompositeOperation = 'source-over'; a.clearRect(0, 0, PW, PH);
+  a.drawImage(sketchCv, 0, 0); a.globalCompositeOperation = 'destination-in'; a.drawImage(sketchMask, 0, 0);
+  w.drawImage(tmpA, 0, 0);
+  a.globalCompositeOperation = 'source-over'; a.clearRect(0, 0, PW, PH);
+  a.drawImage(colorCv, 0, 0); a.globalCompositeOperation = 'destination-in'; a.drawImage(colorMask, 0, 0);
+  w.drawImage(tmpA, 0, 0);
+  w.globalCompositeOperation = 'source-over';
+}
+
+// ---------- 3D scene ----------
+const renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a120c);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(33, W / H, 1, 600);
+const CAM_A = new THREE.Vector3(5, 104, 78), CAM_B = new THREE.Vector3(4.5, 97, 72), LOOK = new THREE.Vector3(4.5, 0, 9);
+
+const sun = new THREE.DirectionalLight(0xffe7c8, 2.6);
+sun.position.set(-45, 80, -30); sun.castShadow = true;
+sun.shadow.mapSize.set(4096, 4096); sun.shadow.camera.left = -45; sun.shadow.camera.right = 45; sun.shadow.camera.top = 45; sun.shadow.camera.bottom = -45;
+sun.shadow.camera.near = 20; sun.shadow.camera.far = 220; sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03; sun.shadow.radius = 4;
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xfff4e6, 0x3a2414, 0.35));
+
+const M = {
+  alu: new THREE.MeshStandardMaterial({ color: 0xd4d8de, metalness: 0.65, roughness: 0.3, envMapIntensity: 1.6 }),
+  dark: new THREE.MeshStandardMaterial({ color: 0x3a3e45, metalness: 0.5, roughness: 0.42, envMapIntensity: 1.3 }),
+  black: new THREE.MeshStandardMaterial({ color: 0x0f1012, metalness: 0.2, roughness: 0.6 }),
+  steel: new THREE.MeshStandardMaterial({ color: 0xc0c5cc, metalness: 0.8, roughness: 0.22, envMapIntensity: 1.6 }),
+  paintYellow: new THREE.MeshStandardMaterial({ color: 0xf2b21f, roughness: 0.38 }),
+  wood: new THREE.MeshStandardMaterial({ color: 0xe2bd8e, roughness: 0.8 }),
+  graphite: new THREE.MeshStandardMaterial({ color: 0x2c2c32, metalness: 0.6, roughness: 0.35 }),
+  ferrule: new THREE.MeshStandardMaterial({ color: 0xd7d9dc, metalness: 0.8, roughness: 0.3, envMapIntensity: 1.5 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0xe48a8d, roughness: 0.85 }),
+  ledG: new THREE.MeshStandardMaterial({ color: 0x113311, emissive: 0x33ff66, emissiveIntensity: 2 }),
+  ledA: new THREE.MeshStandardMaterial({ color: 0x332200, emissive: 0xffaa33, emissiveIntensity: 0 }),
+};
+function shadowy(o) { o.traverse(m => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } }); return o; }
+
+// table
+let tableTex;
+function buildTable() {
+  tableTex = new THREE.CanvasTexture(woodCanvas());
+  tableTex.colorSpace = THREE.SRGBColorSpace; tableTex.wrapS = tableTex.wrapT = THREE.RepeatWrapping; tableTex.repeat.set(1, 1);
+  tableTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const table = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshPhysicalMaterial({ map: tableTex, roughness: 0.55, clearcoat: 0.35, clearcoatRoughness: 0.35 }));
+  table.rotation.x = -Math.PI / 2; table.receiveShadow = true; scene.add(table);
+}
+
+// paper
+let paperMap;
+function buildPaper() {
+  paperMap = new THREE.CanvasTexture(work); paperMap.colorSpace = THREE.SRGBColorSpace; paperMap.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const paper = new THREE.Mesh(new THREE.BoxGeometry(PAPER_W, 0.04, PAPER_D), [
+    new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: .9 }), new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: .9 }),
+    new THREE.MeshStandardMaterial({ map: paperMap, roughness: .88 }), new THREE.MeshStandardMaterial({ color: 0xf0ece2 }),
+    new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: .9 }), new THREE.MeshStandardMaterial({ color: 0xf0ece2, roughness: .9 })]);
+  paper.position.y = 0.02; paper.rotation.y = PROT; paper.receiveShadow = true; scene.add(paper);
+}
+
+// tools: built along +Y with the tip at the origin
+function makePencil() {
+  const g = new THREE.Group();
+  const add = (geo, mat, y) => { const m = new THREE.Mesh(geo, mat); m.position.y = y; g.add(m); return m; };
+  add(new THREE.ConeGeometry(0.12, 0.45, 16).rotateX(Math.PI), M.graphite, 0.22);
+  add(new THREE.CylinderGeometry(0.4, 0.1, 1.7, 6), M.wood, 0.45 + 0.85 - 0.3);
+  add(new THREE.CylinderGeometry(0.42, 0.42, 14.5, 6), M.paintYellow, 1.85 + 7.25);
+  add(new THREE.CylinderGeometry(0.43, 0.43, 0.9, 20), M.ferrule, 16.6 + 0.45);
+  add(new THREE.CylinderGeometry(0.4, 0.4, 0.7, 20), M.rubber, 17.5 + 0.35);
+  g.userData.radius = 0.42;
+  return shadowy(g);
+}
+function makeCrayon(color) {
+  const g = new THREE.Group();
+  const wax = new THREE.MeshStandardMaterial({ color: new THREE.Color(...color.map(v => v / 255)).convertSRGBToLinear(), roughness: 0.62 });
+  const paperMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(...color.map(v => (v * .75 + 30) / 255)).convertSRGBToLinear(), roughness: 0.9 });
+  const add = (geo, mat, y) => { const m = new THREE.Mesh(geo, mat); m.position.y = y; g.add(m); return m; };
+  add(new THREE.CylinderGeometry(0.46, 0.14, 1.1, 24), wax, 0.55);
+  add(new THREE.CylinderGeometry(0.46, 0.46, 7.6, 24), wax, 1.1 + 3.8);
+  add(new THREE.CylinderGeometry(0.48, 0.48, 5.6, 24), paperMat, 2.4 + 2.8);
+  const band = add(new THREE.CylinderGeometry(0.485, 0.485, 0.35, 24), M.black, 3.2); band.material = new THREE.MeshStandardMaterial({ color: 0x15100c, roughness: .9 });
+  add(new THREE.CylinderGeometry(0.485, 0.485, 0.35, 24), band.material, 7.2);
+  g.userData.radius = 0.47; g.userData.wax = wax;
+  return shadowy(g);
+}
+function layFlat(obj, x, z, ang) {
+  const qz = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
+  const qy = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ang);
+  obj.quaternion.copy(qy.multiply(qz)); obj.position.set(x, obj.userData.radius, z); return obj;
+}
+
+const CRAYONS = [
+  { x: -12, z: 19, a: 0.4, c: [200, 52, 40] }, { x: -10.5, z: 21.5, a: 0.15, c: [236, 172, 38] },
+  { x: -12.5, z: 24, a: -0.2, c: [70, 145, 58] }, { x: 7.5, z: 21.5, a: 0.05, c: [130, 84, 50], pick: true },
+  { x: -1, z: 23.5, a: -0.35, c: [58, 112, 186] }, { x: 2, z: 26, a: 0.25, c: [226, 136, 160] },
+  { x: -6.5, z: 26.5, a: -0.08, c: [140, 140, 140] }, { x: 14.5, z: 24.5, a: 0.6, c: [240, 222, 170] },
+];
+const lyingCrayons = [];
+let pencilHeld, pencilLying, crayonHeld, crayonLying, crayonPicked;
+
+function buildProps() {
+  for (const c of CRAYONS) {
+    const o = layFlat(makeCrayon(c.c), c.x, c.z, Math.PI + c.a);
+    // a crayon lying "tip at x,z": shift so the tip sits at the given point
+    scene.add(o); if (c.pick) crayonPicked = o; lyingCrayons.push(o);
+  }
+  pencilHeld = makePencil(); scene.add(pencilHeld);
+  pencilLying = layFlat(makePencil(), PENCIL_SPOT.x, PENCIL_SPOT.z, Math.PI - 0.25); scene.add(pencilLying);
+  crayonHeld = makeCrayon([130, 84, 50]); scene.add(crayonHeld);
+  crayonLying = layFlat(makeCrayon([130, 84, 50]), CRAYON_DROP.x, CRAYON_DROP.z, Math.PI - 0.25); scene.add(crayonLying);
+  // eraser
+  const er = new THREE.Group();
+  const body = new THREE.Mesh(new RoundedBox(4.6, 1.2, 2.1, 0.25), new THREE.MeshStandardMaterial({ color: 0xf3ece2, roughness: .85 }));
+  const sleeve = new THREE.Mesh(new THREE.BoxGeometry(3.0, 1.26, 2.16), new THREE.MeshStandardMaterial({ color: 0x2f62a8, roughness: .6 }));
+  sleeve.position.x = 0.7; er.add(body, sleeve);
+  er.position.set(-11, 0.6, -18); er.rotation.y = 0.35; scene.add(shadowy(er));
+}
+function RoundedBox(w, h, d, r) {
+  const s = new THREE.Shape(), x = -w / 2, y = -d / 2;
+  s.moveTo(x + r, y); s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r); s.lineTo(x + w, y + d - r);
+  s.quadraticCurveTo(x + w, y + d, x + w - r, y + d); s.lineTo(x + r, y + d); s.quadraticCurveTo(x, y + d, x, y + d - r); s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
+  const g = new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: true, bevelThickness: 0.1, bevelSize: 0.1, bevelSegments: 3 });
+  g.rotateX(Math.PI / 2); g.translate(0, h / 2, 0); return g;
+}
+
+// robot arm
+const robot = {};
+function buildRobot() {
+  const base = new THREE.Group(); base.position.set(BASE.x, 0, BASE.z); scene.add(base);
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(7.5, 8, 2.2, 64), M.dark); foot.position.y = 1.1; base.add(foot);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(7.6, 0.25, 12, 64), M.steel); ring.rotation.x = Math.PI / 2; ring.position.y = 2.2; base.add(ring);
+  for (let k = 0; k < 6; k++) { const b = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.3, 6), M.steel); const a = k / 6 * Math.PI * 2; b.position.set(Math.cos(a) * 6.6, 2.3, Math.sin(a) * 6.6); base.add(b); }
+  const ledG = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 8), M.ledG); ledG.position.set(-5.4, 1.4, 5.4); base.add(ledG);
+  const ledA = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 8), M.ledA); ledA.position.set(-4.5, 1.4, 6.2); base.add(ledA);
+  robot.ledA = M.ledA; robot.ledG = M.ledG;
+
+  const yaw = new THREE.Group(); yaw.position.y = 2.2; base.add(yaw); robot.yaw = yaw;
+  const turn = new THREE.Mesh(new THREE.CylinderGeometry(5.6, 6, 2.4, 64), M.alu); turn.position.y = 1.2; yaw.add(turn);
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 5.6, 0.6, 64), M.dark); cap.position.y = 2.7; yaw.add(cap);
+  // shoulder brackets (the arm moves in the yaw group's XY plane; its local Z is the joint axis)
+  for (const sz of [-2.4, 2.4]) { const pl = new THREE.Mesh(new THREE.BoxGeometry(4.2, 7.5, 0.6), M.alu); pl.position.set(0, SH - 2.2 - 3.0, sz); yaw.add(pl); }
+  const servo = new THREE.Mesh(new THREE.BoxGeometry(4.6, 3.6, 3.6), M.black); servo.position.set(-1.6, 4.4, 0); yaw.add(servo);
+
+  const sh = new THREE.Group(); sh.position.y = SH - 2.2; yaw.add(sh); robot.sh = sh;
+  sh.add(new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.3, 5.6, 40).rotateX(Math.PI / 2), M.dark));
+  const shCap = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 5.9, 32).rotateX(Math.PI / 2), M.steel); sh.add(shCap);
+  // upper arm: twin aluminium bars along +X
+  for (const sz of [-1.5, 1.5]) { const bar = new THREE.Mesh(new THREE.BoxGeometry(L1, 2.6, 0.7), M.alu); bar.position.set(L1 / 2, 0, sz); sh.add(bar); }
+  const cable1 = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, L1 - 3, 12).rotateZ(Math.PI / 2), M.black); cable1.position.set(L1 / 2, 1.7, 0); sh.add(cable1);
+
+  const el = new THREE.Group(); el.position.x = L1; sh.add(el); robot.el = el;
+  el.add(new THREE.Mesh(new THREE.CylinderGeometry(1.9, 1.9, 4.6, 40).rotateX(Math.PI / 2), M.dark));
+  el.add(new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 4.9, 32).rotateX(Math.PI / 2), M.steel));
+  const fore = new THREE.Mesh(new THREE.BoxGeometry(L2, 2.0, 2.2), M.alu); fore.position.x = L2 / 2; el.add(fore);
+  const slot = new THREE.Mesh(new THREE.BoxGeometry(L2 - 5, 0.5, 2.25), M.dark); slot.position.x = L2 / 2; el.add(slot);
+  const cable2 = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, L2 - 3, 12).rotateZ(Math.PI / 2), M.black); cable2.position.set(L2 / 2, 1.3, 0); el.add(cable2);
+
+  const wr = new THREE.Group(); wr.position.x = L2; el.add(wr); robot.wr = wr;
+  wr.add(new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 3.4, 32).rotateX(Math.PI / 2), M.dark));
+  // gripper block hangs straight down (counter-rotated each frame)
+  const grip = new THREE.Group(); wr.add(grip); robot.grip = grip;
+  const blk = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.2, 2.6), M.black); blk.position.y = -2.2; grip.add(blk);
+  const fingers = [];
+  for (const sx of [-1, 1]) { const f = new THREE.Mesh(new THREE.BoxGeometry(0.5, 3.0, 1.6), M.steel); f.position.set(sx * 0.95, -5.0, 0); grip.add(f); fingers.push(f); }
+  robot.fingers = fingers;
+  shadowy(base);
+}
+
+function updateRobot(wrist, open) {
+  const dx = wrist.x - BASE.x, dz = wrist.z - BASE.z;
+  const yawA = Math.atan2(-dz, dx);          // rotate the arm plane toward the target
+  robot.yaw.rotation.y = yawA;
+  const r = Math.hypot(dx, dz), dy = wrist.y - (2.2 + SH - 2.2);
+  const d = clamp(Math.hypot(r, dy), Math.abs(L1 - L2) + 0.1, L1 + L2 - 0.1);
+  const a2 = Math.acos(clamp((d * d - L1 * L1 - L2 * L2) / (2 * L1 * L2), -1, 1));
+  const a1 = Math.atan2(dy, r) + Math.atan2(L2 * Math.sin(a2), L1 + L2 * Math.cos(a2));
+  robot.sh.rotation.z = a1;
+  robot.el.rotation.z = -a2;
+  robot.wr.rotation.z = 0;
+  robot.grip.rotation.z = -(a1 - a2);       // keep the gripper vertical
+  robot.fingers[0].position.x = -0.95 - open; robot.fingers[1].position.x = 0.95 + open;
+}
+
+// ---------- captions ----------
+const CAPTIONS = [
+  { t0: 0.4, t1: 5.0, kind: 'comment', who: 'commento a caso', text: '"Palesemente fatta con l\'IA"' },
+  { t0: 5.2, t1: 10.4, text: 'Ma quale IA?! Questa è fatta a MATITA.' },
+  { t0: 10.6, t1: 16.8, text: 'Ecco le prove: ecco il video mentre viene disegnata a mano.' },
+  { t0: 17.0, t1: 26.0, text: '...ok, a mano, più o meno.' },
+  { t0: 31.0, t1: 39.6, text: 'Sempre a diffidare…' },
+];
+const CAP_Y = 1560;
+function backOut(t) { const c = 1.9; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); }
+function wrap(text, maxW) {
+  const words = text.split(' '), lines = []; let cur = '';
+  for (const w of words) { const n = cur ? cur + ' ' + w : w; if (out.measureText(n).width > maxW && cur) { lines.push(cur); cur = w; } else cur = n; }
+  if (cur) lines.push(cur); return lines;
+}
+function drawCaptions(t) {
+  for (const c of CAPTIONS) {
+    if (t < c.t0 || t > c.t1) continue;
+    const pin = clamp((t - c.t0) / 0.35, 0, 1), pout = clamp((c.t1 - t) / 0.25, 0, 1);
+    const sc = (pin < 1 ? 0.6 + 0.4 * backOut(pin) : 1) * (0.92 + 0.08 * pout);
+    out.save(); out.globalAlpha = Math.min(pin * 2, 1) * pout;
+    out.translate(W / 2, CAP_Y); out.scale(sc, sc); out.rotate(c.kind === 'comment' ? -0.02 : 0);
+    const fs = c.kind === 'comment' ? 50 : 58;
+    out.font = (c.kind === 'comment' ? '700 ' : '900 ') + fs + 'px Inter, sans-serif';
+    const lines = wrap(c.text, 860), lh = fs * 1.2;
+    let bw = Math.max(...lines.map(l => out.measureText(l).width)) + 70, bh = lines.length * lh + 44;
+    const head = c.kind === 'comment' ? 64 : 0; bh += head; bw = Math.max(bw, c.kind === 'comment' ? 560 : 0);
+    out.shadowColor = 'rgba(0,0,0,.45)'; out.shadowBlur = 30; out.shadowOffsetY = 10;
+    out.fillStyle = c.kind === 'comment' ? '#ffffff' : '#fff7e8';
+    out.beginPath(); out.roundRect(-bw / 2, -bh / 2, bw, bh, 28); out.fill();
+    out.shadowColor = 'transparent';
+    if (c.kind === 'comment') {
+      const x0 = -bw / 2 + 34, y0 = -bh / 2 + 44;
+      out.fillStyle = '#c9ccd3'; out.beginPath(); out.arc(x0 + 18, y0, 20, 0, 7); out.fill();
+      out.fillStyle = '#9aa0aa'; out.beginPath(); out.arc(x0 + 18, y0 - 5, 7, 0, 7); out.fill();
+      out.beginPath(); out.arc(x0 + 18, y0 + 14, 12, Math.PI, 0); out.fill();
+      out.fillStyle = '#6b7079'; out.font = '600 30px Inter, sans-serif'; out.textBaseline = 'middle'; out.textAlign = 'left';
+      out.fillText(c.who, x0 + 52, y0);
+      out.fillStyle = '#d9473b'; out.textAlign = 'right'; out.fillText('IA?!', bw / 2 - 34, y0);
+      out.font = '700 ' + fs + 'px Inter, sans-serif';
+    }
+    out.fillStyle = '#1d1712'; out.textAlign = 'center'; out.textBaseline = 'middle';
+    lines.forEach((l, i) => out.fillText(l, 0, -bh / 2 + head + 22 + lh / 2 + i * lh));
+    out.restore();
+  }
+}
+
+// ---------- frame ----------
+let lastT = -1;
+function render(t, frame = Math.round(t * 30)) {
+  if (t < lastT) resetReveal();
+  lastT = t;
+  advance(t); composePaper(); paperMap.needsUpdate = true;
+  const st = stateAt(t);
+
+  const liftH = st.lift * 4.5;
+  const tip = { x: st.tip.x, y: 0.05 + liftH, z: st.tip.z };
+  const holding = t < EV.dropPencil ? 'pencil' : (t >= EV.pickCrayon && t < EV.dropCrayon ? 'crayon' : null);
+  const wrist = { x: tip.x, y: tip.y + WRIST_TO_TIP, z: tip.z };
+  updateRobot(wrist, holding ? 0 : 0.35);
+
+  pencilHeld.visible = holding === 'pencil'; pencilHeld.position.set(tip.x, tip.y, tip.z);
+  crayonHeld.visible = holding === 'crayon'; crayonHeld.position.set(tip.x, tip.y, tip.z);
+  if (holding === 'crayon') { const c = st.drawing ? crayonColor(st.local) : [130, 84, 50]; crayonHeld.userData.wax.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255, THREE.SRGBColorSpace); }
+  pencilLying.visible = t >= EV.dropPencil;
+  crayonPicked.visible = t < EV.pickCrayon;
+  crayonLying.visible = t >= EV.dropCrayon;
+  robot.ledG.emissiveIntensity = (Math.floor(t * 2) % 2) ? 0.2 : 2.2;
+  robot.ledA.emissiveIntensity = st.drawing ? 2.2 : 0;
+
+  // camera: slow push-in with a breath of handheld drift
+  const k = ease(t / DURATION);
+  camera.position.lerpVectors(CAM_A, CAM_B, k);
+  camera.position.x += Math.sin(t * 0.37) * 0.35; camera.position.y += Math.cos(t * 0.29) * 0.3;
+  camera.lookAt(LOOK);
+  renderer.render(scene, camera);
+
+  out.drawImage(glCanvas, 0, 0);
+  out.drawImage(vignette, 0, 0);
+  out.save(); out.globalCompositeOperation = 'overlay'; out.globalAlpha = 0.14;
+  out.drawImage(grain[frame % grain.length], 0, 0, W, H); out.restore();
+  drawCaptions(t);
+}
+
+// ---------- boot ----------
+window.__duration = DURATION;
+window.__ready = new Promise(res => {
+  img.onload = async () => {
+    await document.fonts.load('900 58px Inter'); await document.fonts.load('700 50px Inter'); await document.fonts.load('600 30px Inter');
+    buildLayers(); composePaper(); buildTable(); buildPaper(); buildProps(); buildRobot();
+    render(0); res();
+  };
+  img.src = IMG_SRC;
+});
+window.__render = render;
+if (!location.hash.includes('capture')) {
+  let start = null;
+  window.__ready.then(() => {
+    const loop = now => { if (start === null) start = now; let t = (now - start) / 1000; if (t > DURATION) { start = now; t = 0; } render(t); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  });
+  document.getElementById('again').onclick = () => { start = null; };
+} else document.body.classList.add('capture');
+</script>
+</body>
+</html>
